@@ -292,6 +292,147 @@ class GrainCraftAPITest(unittest.TestCase):
         
         print(f"✅ GET /api/orders/my-orders test passed (First request: {first_request_time:.4f}s, Second request: {second_request_time:.4f}s)")
 
+    def test_12_get_grind_options(self):
+        """Test getting grind options"""
+        print("\n🔍 Testing GET /api/grind-options...")
+        
+        response = requests.get(f"{API_URL}/grind-options")
+        
+        self.assertEqual(response.status_code, 200, "Expected status code 200")
+        options = response.json()
+        
+        # Verify structure of grind options
+        self.assertTrue(len(options) > 0, "Expected at least one grind option")
+        required_fields = ["type", "description", "additional_cost", "processing_time_minutes"]
+        for option in options:
+            for field in required_fields:
+                self.assertIn(field, option, f"Field '{field}' missing in grind option")
+        
+        print("✅ GET /api/grind-options test passed")
+        return options
+
+    def test_13_cart_operations(self):
+        """Test cart operations (add, get, remove, clear)"""
+        print("\n🔍 Testing cart operations...")
+        
+        if not self.customer_token:
+            self.test_06_customer_login()
+        
+        headers = {"Authorization": f"Bearer {self.customer_token}"}
+        
+        # Get available grains
+        grains = self.test_07_get_grains()
+        grind_options = self.test_12_get_grind_options()
+        
+        # 1. Add individual grain to cart
+        print("Adding individual grain to cart...")
+        individual_item = {
+            "type": "individual",
+            "grain_id": grains[0]["id"],
+            "quantity_kg": 1.5,
+            "grind_option": grind_options[1]  # Use the second grind option
+        }
+        
+        response = requests.post(f"{API_URL}/cart/add", json=individual_item, headers=headers)
+        self.assertEqual(response.status_code, 200, "Expected status code 200")
+        cart_item = response.json()
+        self.assertIn("id", cart_item, "Expected id in response")
+        self.cart_items.append(cart_item["id"])
+        
+        # 2. Add custom mix to cart
+        print("Adding custom mix to cart...")
+        mix_item = {
+            "type": "mix",
+            "grains": [
+                {
+                    "grain_id": grains[0]["id"],
+                    "grain_name": grains[0]["name"],
+                    "quantity_kg": 0.5,
+                    "price_per_kg": grains[0]["price_per_kg"]
+                },
+                {
+                    "grain_id": grains[1]["id"],
+                    "grain_name": grains[1]["name"],
+                    "quantity_kg": 0.5,
+                    "price_per_kg": grains[1]["price_per_kg"]
+                }
+            ],
+            "grind_option": grind_options[2]  # Use the third grind option
+        }
+        
+        response = requests.post(f"{API_URL}/cart/add", json=mix_item, headers=headers)
+        self.assertEqual(response.status_code, 200, "Expected status code 200")
+        cart_item = response.json()
+        self.assertIn("id", cart_item, "Expected id in response")
+        self.cart_items.append(cart_item["id"])
+        
+        # 3. Get cart
+        print("Getting cart...")
+        response = requests.get(f"{API_URL}/cart", headers=headers)
+        self.assertEqual(response.status_code, 200, "Expected status code 200")
+        cart = response.json()
+        self.assertTrue(len(cart) >= 2, "Expected at least 2 items in cart")
+        
+        # 4. Remove one item from cart
+        if len(self.cart_items) > 0:
+            print(f"Removing item {self.cart_items[0]} from cart...")
+            response = requests.delete(f"{API_URL}/cart/{self.cart_items[0]}", headers=headers)
+            self.assertEqual(response.status_code, 200, "Expected status code 200")
+            
+            # Verify item was removed
+            response = requests.get(f"{API_URL}/cart", headers=headers)
+            self.assertEqual(response.status_code, 200, "Expected status code 200")
+            cart = response.json()
+            item_ids = [item["id"] for item in cart]
+            self.assertNotIn(self.cart_items[0], item_ids, "Expected item to be removed from cart")
+        
+        # 5. Clear cart
+        print("Clearing cart...")
+        response = requests.delete(f"{API_URL}/cart", headers=headers)
+        self.assertEqual(response.status_code, 200, "Expected status code 200")
+        
+        # Verify cart is empty
+        response = requests.get(f"{API_URL}/cart", headers=headers)
+        self.assertEqual(response.status_code, 200, "Expected status code 200")
+        cart = response.json()
+        self.assertEqual(len(cart), 0, "Expected empty cart")
+        
+        print("✅ Cart operations test passed")
+
+    def test_14_admin_dashboard(self):
+        """Test admin dashboard"""
+        print("\n🔍 Testing GET /api/admin/dashboard...")
+        
+        if not self.admin_token:
+            self.test_03_admin_login()
+        
+        headers = {"Authorization": f"Bearer {self.admin_token}"}
+        
+        response = requests.get(f"{API_URL}/admin/dashboard", headers=headers)
+        
+        self.assertEqual(response.status_code, 200, "Expected status code 200")
+        data = response.json()
+        
+        required_fields = ["total_orders", "total_customers", "total_grinding_stores", "total_delivery_boys"]
+        for field in required_fields:
+            self.assertIn(field, data, f"Field '{field}' missing in dashboard data")
+        
+        print("✅ GET /api/admin/dashboard test passed")
+
+    def test_15_pwa_features(self):
+        """Test PWA-related endpoints (if any)"""
+        print("\n🔍 Testing PWA features...")
+        
+        # Check if service worker is accessible
+        response = requests.get(f"{BACKEND_URL}/sw.js")
+        print(f"Service worker response: {response.status_code}")
+        
+        # Check if manifest is accessible
+        response = requests.get(f"{BACKEND_URL}/manifest.json")
+        print(f"Manifest response: {response.status_code}")
+        
+        print("✅ PWA features test completed")
+
 def random_string(length):
     """Generate a random string of fixed length"""
     letters = string.ascii_lowercase + string.digits
