@@ -606,17 +606,19 @@ async def verify_payment(verification_data: Dict[str, str]):
 @api_router.get("/orders/my-orders")
 async def get_my_orders(current_user: User = Depends(get_current_user)):
     try:
-        # Try cache first
-        cached_orders = redis_client.get(f"orders:{current_user.id}")
-        if cached_orders:
-            return json.loads(cached_orders)
+        # Try cache first if Redis is available
+        if redis_available and redis_client:
+            cached_orders = redis_client.get(f"orders:{current_user.id}")
+            if cached_orders:
+                return json.loads(cached_orders)
         
         # Get from database
         orders = await db.orders.find({"customer_id": current_user.id}).sort("created_at", -1).to_list(1000)
         order_objects = [Order(**order) for order in orders]
         
-        # Cache for 5 minutes
-        redis_client.setex(f"orders:{current_user.id}", 300, json.dumps([order.dict() for order in order_objects], default=str))
+        # Cache for 5 minutes if Redis is available
+        if redis_available and redis_client:
+            redis_client.setex(f"orders:{current_user.id}", 300, json.dumps([order.dict() for order in order_objects], default=str))
         
         return order_objects
     except Exception as e:
