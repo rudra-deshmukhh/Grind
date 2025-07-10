@@ -423,19 +423,72 @@ class GrainCraftAPITest(unittest.TestCase):
         
         print("✅ GET /api/admin/dashboard test passed")
 
-    def test_15_pwa_features(self):
-        """Test PWA-related endpoints (if any)"""
-        print("\n🔍 Testing PWA features...")
+    def test_16_cart_objectid_serialization(self):
+        """Test cart operations with ObjectId serialization fixes"""
+        print("\n🔍 Testing cart operations with ObjectId serialization...")
         
-        # Check if service worker is accessible
-        response = requests.get(f"{BACKEND_URL}/sw.js")
-        print(f"Service worker response: {response.status_code}")
+        if not self.customer_token:
+            self.test_06_customer_login()
         
-        # Check if manifest is accessible
-        response = requests.get(f"{BACKEND_URL}/manifest.json")
-        print(f"Manifest response: {response.status_code}")
+        headers = {"Authorization": f"Bearer {self.customer_token}"}
         
-        print("✅ PWA features test completed")
+        # Get available grains
+        grains = self.test_07_get_grains()
+        grind_options = self.test_12_get_grind_options()
+        
+        # Add multiple items to cart
+        for i in range(3):
+            item = {
+                "type": "individual",
+                "grain_id": grains[i % len(grains)]["id"],
+                "quantity_kg": 0.5 * (i + 1),
+                "grind_option": grind_options[i % len(grind_options)]
+            }
+            
+            response = requests.post(f"{API_URL}/cart/add", json=item, headers=headers)
+            self.assertEqual(response.status_code, 200, f"Expected status code 200, got {response.status_code}")
+            logging.info(f"Added item to cart: {response.json()}")
+        
+        # Get cart and verify items
+        response = requests.get(f"{API_URL}/cart", headers=headers)
+        self.assertEqual(response.status_code, 200, "Expected status code 200")
+        cart = response.json()
+        
+        # Verify cart items have proper serialization
+        for item in cart:
+            self.assertIn("id", item, "Expected id in cart item")
+            self.assertIsInstance(item["id"], str, "Expected id to be a string")
+            self.assertIn("user_id", item, "Expected user_id in cart item")
+            self.assertIsInstance(item["user_id"], str, "Expected user_id to be a string")
+        
+        # Clear cart
+        response = requests.delete(f"{API_URL}/cart", headers=headers)
+        self.assertEqual(response.status_code, 200, "Expected status code 200")
+        
+        print("✅ Cart ObjectId serialization test passed")
+
+    def test_17_order_objectid_serialization(self):
+        """Test order operations with ObjectId serialization fixes"""
+        print("\n🔍 Testing order operations with ObjectId serialization...")
+        
+        if not self.customer_token:
+            self.test_06_customer_login()
+        
+        headers = {"Authorization": f"Bearer {self.customer_token}"}
+        
+        # Get orders
+        response = requests.get(f"{API_URL}/orders/my-orders", headers=headers)
+        self.assertEqual(response.status_code, 200, "Expected status code 200")
+        orders = response.json()
+        
+        # Verify order objects have proper serialization
+        for order in orders:
+            self.assertIn("id", order, "Expected id in order")
+            self.assertIsInstance(order["id"], str, "Expected id to be a string")
+            self.assertIn("customer_id", order, "Expected customer_id in order")
+            self.assertIsInstance(order["customer_id"], str, "Expected customer_id to be a string")
+        
+        print("✅ Order ObjectId serialization test passed")
 
 def random_string(length):
     """Generate a random string of fixed length"""
