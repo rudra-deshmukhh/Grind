@@ -467,25 +467,33 @@ async def login_user(login_data: UserLogin):
             data={"sub": user["id"], "role": user["role"]}
         )
         
+        # Clean user data and convert ObjectIds
+        clean_user = {}
+        for key, value in user.items():
+            if key == "_id" or key == "password_hash":
+                continue  # Skip MongoDB's _id field and password
+            elif isinstance(value, ObjectId):
+                clean_user[key] = str(value)
+            elif isinstance(value, datetime):
+                clean_user[key] = value.isoformat()
+            else:
+                clean_user[key] = value
+        
         # Cache user session if Redis is available
-        user_obj = User(**user)
         if redis_available and redis_client:
-            redis_client.setex(f"user:{user['id']}", 900, json.dumps(user_obj.dict(), default=str))
+            redis_client.setex(f"user:{user['id']}", 900, json.dumps(clean_user, default=str))
         
         return {
             "access_token": access_token,
             "token_type": "bearer",
-            "user": {
-                "id": user["id"],
-                "email": user["email"],
-                "first_name": user["first_name"],
-                "last_name": user["last_name"],
-                "role": user["role"]
-            }
+            "user": clean_user
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logging.error(f"Error in login_user: {e}")
+        raise HTTPException(status_code=500, detail="Login failed")
 
 @api_router.get("/grains")
 async def get_grains():
