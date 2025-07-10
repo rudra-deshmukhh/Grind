@@ -782,8 +782,25 @@ async def add_to_cart(item_data: Dict[str, Any], current_user: User = Depends(ge
 async def get_cart(current_user: User = Depends(get_current_user)):
     try:
         cart_items = await db.cart.find({"user_id": current_user.id}).to_list(1000)
-        return cart_items
+        
+        # Clean MongoDB data and convert ObjectIds
+        clean_items = []
+        for item in cart_items:
+            clean_item = {}
+            for key, value in item.items():
+                if key == "_id":
+                    continue  # Skip MongoDB's _id field
+                elif isinstance(value, ObjectId):
+                    clean_item[key] = str(value)
+                elif isinstance(value, datetime):
+                    clean_item[key] = value.isoformat()
+                else:
+                    clean_item[key] = value
+            clean_items.append(clean_item)
+        
+        return clean_items
     except Exception as e:
+        logging.error(f"Error in get_cart: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.delete("/cart/{item_id}")
