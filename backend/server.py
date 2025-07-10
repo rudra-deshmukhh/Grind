@@ -498,14 +498,27 @@ async def get_grains():
         
         # Get from database
         grains = await db.grains.find({"available": True}).to_list(1000)
-        grain_objects = [Grain(**grain) for grain in grains]
+        
+        # Clean MongoDB data and convert ObjectIds
+        clean_grains = []
+        for grain in grains:
+            clean_grain = {}
+            for key, value in grain.items():
+                if key == "_id":
+                    continue  # Skip MongoDB's _id field
+                elif isinstance(value, ObjectId):
+                    clean_grain[key] = str(value)
+                else:
+                    clean_grain[key] = value
+            clean_grains.append(clean_grain)
         
         # Cache for 5 minutes if Redis is available
         if redis_available and redis_client:
-            redis_client.setex("grains:all", 300, json.dumps([grain.dict() for grain in grain_objects], default=str))
+            redis_client.setex("grains:all", 300, json.dumps(clean_grains, default=str))
         
-        return grain_objects
+        return clean_grains
     except Exception as e:
+        logging.error(f"Error in get_grains: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.post("/orders")
