@@ -34,11 +34,20 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 # Redis connection for caching and sessions
-redis_client = redis.Redis(
-    host=os.getenv('REDIS_HOST', 'localhost'),
-    port=int(os.getenv('REDIS_PORT', 6379)),
-    decode_responses=True
-)
+try:
+    redis_client = redis.Redis(
+        host=os.getenv('REDIS_HOST', 'localhost'),
+        port=int(os.getenv('REDIS_PORT', 6379)),
+        decode_responses=True,
+        socket_connect_timeout=1,
+        socket_timeout=1
+    )
+    # Test connection
+    redis_available = redis_client.ping()
+except:
+    redis_available = False
+    redis_client = None
+    print("Redis not available, continuing without caching")
 
 # Initialize Razorpay client
 razorpay_client = razorpay.Client(auth=(
