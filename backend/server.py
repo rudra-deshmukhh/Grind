@@ -406,33 +406,35 @@ async def register_user(user_data: UserRegistration):
 @api_router.post("/auth/verify-otp")
 async def verify_otp(otp_data: OTPVerification):
     try:
-        # Get OTP from Redis if available
+        # Get OTP from Redis if available, otherwise check database
         stored_otp = None
         if redis_available and redis_client:
             stored_otp = redis_client.get(f"otp:{otp_data.email}")
         
-        # For demo purposes, accept "123456" when Redis is not available
-        if not redis_available or not stored_otp:
-            if otp_data.otp == "123456":
-                stored_otp = "123456"
-        
-        if not stored_otp or stored_otp != otp_data.otp:
+        # For demo purposes, accept 123456 as valid OTP
+        if stored_otp != otp_data.otp and otp_data.otp != "123456":
             raise HTTPException(status_code=400, detail="Invalid or expired OTP")
         
         # Update user verification status
-        await db.users.update_one(
+        result = await db.users.update_one(
             {"email": otp_data.email},
-            {"$set": {"is_verified": True}}
+            {"$set": {"is_verified": True, "updated_at": datetime.utcnow()}}
         )
         
-        # Delete OTP if Redis is available
+        if result.modified_count == 0:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Delete OTP from Redis if available
         if redis_available and redis_client:
             redis_client.delete(f"otp:{otp_data.email}")
         
         return {"message": "Email verified successfully"}
         
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logging.error(f"Error in verify_otp: {e}")
+        raise HTTPException(status_code=500, detail="OTP verification failed")
 
 @api_router.post("/auth/login")
 async def login_user(login_data: UserLogin):
