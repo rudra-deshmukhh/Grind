@@ -470,17 +470,19 @@ async def login_user(login_data: UserLogin):
 @api_router.get("/grains")
 async def get_grains():
     try:
-        # Try to get from cache first
-        cached_grains = redis_client.get("grains:all")
-        if cached_grains:
-            return json.loads(cached_grains)
+        # Try to get from cache first if Redis is available
+        if redis_available and redis_client:
+            cached_grains = redis_client.get("grains:all")
+            if cached_grains:
+                return json.loads(cached_grains)
         
         # Get from database
         grains = await db.grains.find({"available": True}).to_list(1000)
         grain_objects = [Grain(**grain) for grain in grains]
         
-        # Cache for 5 minutes
-        redis_client.setex("grains:all", 300, json.dumps([grain.dict() for grain in grain_objects], default=str))
+        # Cache for 5 minutes if Redis is available
+        if redis_available and redis_client:
+            redis_client.setex("grains:all", 300, json.dumps([grain.dict() for grain in grain_objects], default=str))
         
         return grain_objects
     except Exception as e:
