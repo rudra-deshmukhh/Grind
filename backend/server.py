@@ -236,20 +236,22 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         if user_id is None:
             raise HTTPException(status_code=401, detail="Invalid authentication credentials")
         
-        # Try to get user from cache first
-        cached_user = redis_client.get(f"user:{user_id}")
-        if cached_user:
-            user_data = json.loads(cached_user)
-            return User(**user_data)
+        # Try to get user from cache first if Redis is available
+        if redis_available and redis_client:
+            cached_user = redis_client.get(f"user:{user_id}")
+            if cached_user:
+                user_data = json.loads(cached_user)
+                return User(**user_data)
         
-        # Get from database if not in cache
+        # Get from database if not in cache or Redis not available
         user = await db.users.find_one({"id": user_id})
         if user is None:
             raise HTTPException(status_code=401, detail="User not found")
         
-        # Cache user for 15 minutes
+        # Cache user for 15 minutes if Redis is available
         user_obj = User(**user)
-        redis_client.setex(f"user:{user_id}", 900, json.dumps(user_obj.dict(), default=str))
+        if redis_available and redis_client:
+            redis_client.setex(f"user:{user_id}", 900, json.dumps(user_obj.dict(), default=str))
         
         return user_obj
     except Exception as e:
