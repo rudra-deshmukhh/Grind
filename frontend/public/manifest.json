@@ -1,0 +1,72 @@
+{
+  "short_name": "GrainCraft",
+  "name": "GrainCraft - Premium Grain Marketplace",
+  "description": "Order premium grains with custom grinding options and weekly delivery subscriptions",
+  "icons": [
+    {
+      "src": "favicon.ico",
+      "sizes": "64x64 32x32 24x24 16x16",
+      "type": "image/x-icon"
+    },
+    {
+      "src": "logo192.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "logo512.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#D97706",
+  "background_color": "#FEF3C7",
+  "orientation": "portrait-primary",
+  "categories": ["food", "shopping", "business"],
+  "lang": "en",
+  "scope": "/",
+  "screenshots": [
+    {
+      "src": "screenshot1.png",
+      "type": "image/png",
+      "sizes": "540x720"
+    },
+    {
+      "src": "screenshot2.png",
+      "type": "image/png",
+      "sizes": "540x720"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Browse Grains",
+      "short_name": "Grains",
+      "description": "Browse our premium grain collection",
+      "url": "/customer?tab=catalog",
+      "icons": [{ "src": "icon-grains.png", "sizes": "96x96" }]
+    },
+    {
+      "name": "Mix Builder",
+      "short_name": "Mix",
+      "description": "Create custom grain mixes",
+      "url": "/customer?tab=mix",
+      "icons": [{ "src": "icon-mix.png", "sizes": "96x96" }]
+    },
+    {
+      "name": "My Orders",
+      "short_name": "Orders",
+      "description": "Track your orders",
+      "url": "/customer?tab=orders",
+      "icons": [{ "src": "icon-orders.png", "sizes": "96x96" }]
+    }
+  ],
+  "related_applications": [
+    {
+      "platform": "play",
+      "url": "https://play.google.com/store/apps/details?id=com.graincraft.app",
+      "id": "com.graincraft.app"
+    }
+  ]
+}

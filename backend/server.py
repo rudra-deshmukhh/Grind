@@ -1,6 +1,9 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, BackgroundTasks
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
@@ -13,15 +16,14 @@ from datetime import datetime, timedelta
 import jwt
 import bcrypt
 import razorpay
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-import random
 import asyncio
 import json
+import redis
 from geopy.distance import geodesic
 from geopy.geocoders import Nominatim
-import requests
+import hashlib
+import time
+from collections import defaultdict
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -31,6 +33,13 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
+# Redis connection for caching and sessions
+redis_client = redis.Redis(
+    host=os.getenv('REDIS_HOST', 'localhost'),
+    port=int(os.getenv('REDIS_PORT', 6379)),
+    decode_responses=True
+)
+
 # Initialize Razorpay client
 razorpay_client = razorpay.Client(auth=(
     os.getenv("RAZORPAY_KEY_ID", "rzp_test_demo"),
@@ -38,7 +47,16 @@ razorpay_client = razorpay.Client(auth=(
 ))
 
 # Create the main app
-app = FastAPI(title="GrainCraft Multi-Role Platform", version="2.0.0")
+app = FastAPI(
+    title="GrainCraft Scalable Platform", 
+    version="2.1.0",
+    description="High-Performance Multi-Role Grain Ecommerce Platform"
+)
+
+# Add security middleware
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
 api_router = APIRouter(prefix="/api")
 security = HTTPBearer()
 
@@ -46,11 +64,42 @@ security = HTTPBearer()
 JWT_SECRET = os.getenv("JWT_SECRET", "your-secret-key-here")
 JWT_ALGORITHM = "HS256"
 
-# User Models
-class UserRole(BaseModel):
-    role: str  # customer, grinding_store, admin, delivery_boy
-    permissions: List[str] = []
+# Rate limiting
+request_counts = defaultdict(list)
+RATE_LIMIT_REQUESTS = 100  # requests per minute
+RATE_LIMIT_WINDOW = 60  # seconds
 
+# WebSocket connection manager
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+        self.user_connections: Dict[str, WebSocket] = {}
+
+    async def connect(self, websocket: WebSocket, user_id: str):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        self.user_connections[user_id] = websocket
+
+    def disconnect(self, websocket: WebSocket, user_id: str):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+        if user_id in self.user_connections:
+            del self.user_connections[user_id]
+
+    async def send_personal_message(self, message: str, user_id: str):
+        if user_id in self.user_connections:
+            await self.user_connections[user_id].send_text(message)
+
+    async def broadcast(self, message: str):
+        for connection in self.active_connections:
+            try:
+                await connection.send_text(message)
+            except:
+                pass
+
+manager = ConnectionManager()
+
+# Enhanced Models with caching
 class User(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     email: EmailStr
@@ -58,10 +107,11 @@ class User(BaseModel):
     first_name: str
     last_name: str
     phone: Optional[str] = None
-    role: str = "customer"  # customer, grinding_store, admin, delivery_boy
+    role: str = "customer"
     is_verified: bool = False
     is_active: bool = True
     profile_data: Dict[str, Any] = {}
+    last_login: Optional[datetime] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -81,29 +131,6 @@ class OTPVerification(BaseModel):
     email: EmailStr
     otp: str
 
-class GrindingStore(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    name: str
-    owner_id: str
-    location: Dict[str, Any]  # {address, latitude, longitude, city, state}
-    capacity_kg_per_day: float
-    contact_info: Dict[str, str]
-    operating_hours: Dict[str, str]
-    services: List[str]
-    is_active: bool = True
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-
-class DeliveryBoy(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    user_id: str
-    license_number: str
-    vehicle_type: str
-    current_location: Dict[str, float]  # {latitude, longitude}
-    assigned_area: Dict[str, Any]  # Service area bounds
-    is_available: bool = True
-    rating: float = 5.0
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-
 class Grain(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
@@ -115,37 +142,20 @@ class Grain(BaseModel):
     stock_kg: float = 0.0
     minimum_order_kg: float = 0.1
     available: bool = True
-    created_by: str  # admin_id
+    created_by: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
-
-class GrindOption(BaseModel):
-    type: str
-    description: str
-    additional_cost: float = 0.0
-    processing_time_minutes: int = 5
-
-class OrderItem(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    type: str  # "individual" or "mix"
-    grain_id: Optional[str] = None
-    grain_name: Optional[str] = None
-    quantity_kg: Optional[float] = None
-    grains: Optional[List[Dict[str, Any]]] = None
-    grind_option: Optional[GrindOption] = None
-    unit_price: float
-    total_price: float
 
 class Order(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     customer_id: str
-    items: List[OrderItem]
-    delivery_address: Dict[str, Any]  # {address, latitude, longitude, city, state}
-    delivery_slot: Optional[str] = None  # "morning", "afternoon", "evening"
+    items: List[Dict[str, Any]]
+    delivery_address: Dict[str, Any]
+    delivery_slot: Optional[str] = None
     delivery_date: Optional[datetime] = None
     grinding_store_id: Optional[str] = None
     delivery_boy_id: Optional[str] = None
-    status: str = "pending"  # pending, confirmed, grinding, packing, out_for_delivery, delivered, cancelled
-    payment_status: str = "pending"  # pending, paid, failed, refunded
+    status: str = "pending"
+    payment_status: str = "pending"
     razorpay_order_id: Optional[str] = None
     razorpay_payment_id: Optional[str] = None
     total_amount: float
@@ -153,31 +163,37 @@ class Order(BaseModel):
     is_subscription: bool = False
     subscription_id: Optional[str] = None
     notes: Optional[str] = None
+    priority: int = 1  # 1=normal, 2=high, 3=urgent
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
-class Subscription(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    customer_id: str
-    items: List[OrderItem]
-    delivery_address: Dict[str, Any]
-    delivery_slot: str
-    frequency: str = "weekly"  # weekly, bi-weekly, monthly
-    delivery_day: str = "monday"  # monday, tuesday, etc.
-    razorpay_subscription_id: Optional[str] = None
-    status: str = "active"  # active, paused, cancelled
-    next_delivery_date: datetime
-    total_amount: float
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+# Rate limiting middleware
+async def rate_limit_middleware(request: Request, call_next):
+    client_ip = request.client.host
+    current_time = time.time()
+    
+    # Clean old requests
+    request_counts[client_ip] = [
+        req_time for req_time in request_counts[client_ip]
+        if current_time - req_time < RATE_LIMIT_WINDOW
+    ]
+    
+    # Check rate limit
+    if len(request_counts[client_ip]) >= RATE_LIMIT_REQUESTS:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Rate limit exceeded"}
+        )
+    
+    # Add current request
+    request_counts[client_ip].append(current_time)
+    
+    response = await call_next(request)
+    return response
 
-class OrderStatus(BaseModel):
-    order_id: str
-    status: str
-    updated_by: str
-    notes: Optional[str] = None
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+app.middleware("http")(rate_limit_middleware)
 
-# Utility Functions
+# Utility Functions with Redis caching
 def hash_password(password: str) -> str:
     salt = bcrypt.gensalt()
     return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
@@ -211,55 +227,79 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         if user_id is None:
             raise HTTPException(status_code=401, detail="Invalid authentication credentials")
         
+        # Try to get user from cache first
+        cached_user = redis_client.get(f"user:{user_id}")
+        if cached_user:
+            user_data = json.loads(cached_user)
+            return User(**user_data)
+        
+        # Get from database if not in cache
         user = await db.users.find_one({"id": user_id})
         if user is None:
             raise HTTPException(status_code=401, detail="User not found")
         
-        return User(**user)
+        # Cache user for 15 minutes
+        user_obj = User(**user)
+        redis_client.setex(f"user:{user_id}", 900, json.dumps(user_obj.dict(), default=str))
+        
+        return user_obj
     except Exception as e:
         raise HTTPException(status_code=401, detail="Invalid authentication credentials")
 
 def generate_otp() -> str:
+    import random
     return str(random.randint(100000, 999999))
 
-def send_otp_email(email: str, otp: str):
-    # In real implementation, integrate with email service
-    print(f"OTP for {email}: {otp}")
-    # Store OTP in database with expiration
-    return True
+async def send_notification(user_id: str, message: str, notification_type: str = "info"):
+    """Send real-time notification via WebSocket"""
+    notification = {
+        "type": notification_type,
+        "message": message,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    await manager.send_personal_message(json.dumps(notification), user_id)
 
-def calculate_distance(location1: Dict[str, float], location2: Dict[str, float]) -> float:
-    """Calculate distance between two locations in kilometers"""
-    return geodesic(
-        (location1['latitude'], location1['longitude']),
-        (location2['latitude'], location2['longitude'])
-    ).kilometers
+# Background task queue simulation
+async def process_order_status_update(order_id: str, new_status: str):
+    """Background task to process order status updates"""
+    try:
+        # Update order in database
+        await db.orders.update_one(
+            {"id": order_id},
+            {
+                "$set": {
+                    "status": new_status,
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+        
+        # Add to status history
+        await db.order_status_history.insert_one({
+            "order_id": order_id,
+            "status": new_status,
+            "updated_by": "system",
+            "notes": "Auto-updated by system",
+            "timestamp": datetime.utcnow()
+        })
+        
+        # Get order details for notification
+        order = await db.orders.find_one({"id": order_id})
+        if order:
+            # Send notification to customer
+            await send_notification(
+                order["customer_id"],
+                f"Your order status has been updated to: {new_status}",
+                "order_update"
+            )
+            
+            # Clear related cache
+            redis_client.delete(f"orders:{order['customer_id']}")
+            
+    except Exception as e:
+        logging.error(f"Error processing order status update: {e}")
 
-async def group_orders_by_location(orders: List[Order], max_distance_km: float = 5.0) -> Dict[str, List[Order]]:
-    """Group orders by nearby locations for efficient processing"""
-    grouped = {}
-    
-    for order in orders:
-        location_key = None
-        
-        # Find if order fits in existing group
-        for key, group in grouped.items():
-            if group:
-                group_location = group[0].delivery_address
-                if calculate_distance(order.delivery_address, group_location) <= max_distance_km:
-                    location_key = key
-                    break
-        
-        # Create new group if no nearby group found
-        if location_key is None:
-            location_key = f"group_{len(grouped) + 1}"
-            grouped[location_key] = []
-        
-        grouped[location_key].append(order)
-    
-    return grouped
-
-# Background Tasks
+# Auto order status progression
 async def auto_update_order_status():
     """Background task to automatically update order status"""
     while True:
@@ -280,33 +320,16 @@ async def auto_update_order_status():
                     new_status = "out_for_delivery"
                 
                 if new_status:
-                    await db.orders.update_one(
-                        {"id": order_obj.id},
-                        {
-                            "$set": {
-                                "status": new_status,
-                                "updated_at": datetime.utcnow()
-                            }
-                        }
-                    )
-                    
-                    # Add status history
-                    await db.order_status_history.insert_one({
-                        "order_id": order_obj.id,
-                        "status": new_status,
-                        "updated_by": "system",
-                        "notes": "Auto-updated by system",
-                        "timestamp": datetime.utcnow()
-                    })
+                    await process_order_status_update(order_obj.id, new_status)
             
             # Wait 1 minute before checking again
             await asyncio.sleep(60)
             
         except Exception as e:
-            print(f"Error in auto_update_order_status: {e}")
+            logging.error(f"Error in auto_update_order_status: {e}")
             await asyncio.sleep(60)
 
-# Authentication Routes
+# Optimized Routes with caching
 @api_router.post("/auth/register")
 async def register_user(user_data: UserRegistration):
     try:
@@ -332,13 +355,10 @@ async def register_user(user_data: UserRegistration):
         
         # Generate OTP for verification
         otp = generate_otp()
-        await db.otps.insert_one({
-            "email": user_data.email,
-            "otp": otp,
-            "expires_at": datetime.utcnow() + timedelta(minutes=10)
-        })
+        redis_client.setex(f"otp:{user_data.email}", 600, otp)  # 10 minutes expiry
         
-        send_otp_email(user_data.email, otp)
+        # In production, send actual email/SMS
+        print(f"OTP for {user_data.email}: {otp}")
         
         return {"message": "User registered successfully. Please verify your email with OTP."}
         
@@ -348,14 +368,10 @@ async def register_user(user_data: UserRegistration):
 @api_router.post("/auth/verify-otp")
 async def verify_otp(otp_data: OTPVerification):
     try:
-        # Find OTP
-        otp_record = await db.otps.find_one({
-            "email": otp_data.email,
-            "otp": otp_data.otp,
-            "expires_at": {"$gt": datetime.utcnow()}
-        })
+        # Get OTP from Redis
+        stored_otp = redis_client.get(f"otp:{otp_data.email}")
         
-        if not otp_record:
+        if not stored_otp or stored_otp != otp_data.otp:
             raise HTTPException(status_code=400, detail="Invalid or expired OTP")
         
         # Update user verification status
@@ -365,7 +381,7 @@ async def verify_otp(otp_data: OTPVerification):
         )
         
         # Delete OTP
-        await db.otps.delete_one({"_id": otp_record["_id"]})
+        redis_client.delete(f"otp:{otp_data.email}")
         
         return {"message": "Email verified successfully"}
         
@@ -387,10 +403,20 @@ async def login_user(login_data: UserLogin):
         if not user["is_verified"]:
             raise HTTPException(status_code=401, detail="Please verify your email first")
         
+        # Update last login
+        await db.users.update_one(
+            {"id": user["id"]},
+            {"$set": {"last_login": datetime.utcnow()}}
+        )
+        
         # Create access token
         access_token = create_access_token(
             data={"sub": user["id"], "role": user["role"]}
         )
+        
+        # Cache user session
+        user_obj = User(**user)
+        redis_client.setex(f"user:{user['id']}", 900, json.dumps(user_obj.dict(), default=str))
         
         return {
             "access_token": access_token,
@@ -407,32 +433,25 @@ async def login_user(login_data: UserLogin):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# Grain Management Routes
 @api_router.get("/grains")
 async def get_grains():
-    grains = await db.grains.find({"available": True}).to_list(1000)
-    return [Grain(**grain) for grain in grains]
+    try:
+        # Try to get from cache first
+        cached_grains = redis_client.get("grains:all")
+        if cached_grains:
+            return json.loads(cached_grains)
+        
+        # Get from database
+        grains = await db.grains.find({"available": True}).to_list(1000)
+        grain_objects = [Grain(**grain) for grain in grains]
+        
+        # Cache for 5 minutes
+        redis_client.setex("grains:all", 300, json.dumps([grain.dict() for grain in grain_objects], default=str))
+        
+        return grain_objects
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-@api_router.post("/grains")
-async def create_grain(grain_data: Grain, current_user: User = Depends(get_current_user)):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Only admins can create grains")
-    
-    grain_data.created_by = current_user.id
-    await db.grains.insert_one(grain_data.dict())
-    return grain_data
-
-@api_router.get("/grind-options")
-async def get_grind_options():
-    return [
-        {"type": "whole", "description": "Whole grains (no grinding)", "additional_cost": 0.0, "processing_time_minutes": 0},
-        {"type": "coarse", "description": "Coarse grind - chunky texture", "additional_cost": 5.0, "processing_time_minutes": 5},
-        {"type": "medium", "description": "Medium grind - balanced texture", "additional_cost": 8.0, "processing_time_minutes": 8},
-        {"type": "fine", "description": "Fine grind - smooth texture", "additional_cost": 12.0, "processing_time_minutes": 12},
-        {"type": "powder", "description": "Powder grind - very fine flour", "additional_cost": 15.0, "processing_time_minutes": 15}
-    ]
-
-# Order Management Routes
 @api_router.post("/orders")
 async def create_order(order_data: Dict[str, Any], current_user: User = Depends(get_current_user)):
     try:
@@ -450,22 +469,39 @@ async def create_order(order_data: Dict[str, Any], current_user: User = Depends(
             }
         })
         
-        # Find nearest grinding store
-        grinding_store = await db.grinding_stores.find_one({"is_active": True})
+        # Find nearest grinding store with load balancing
+        grinding_stores = await db.grinding_stores.find({"is_active": True}).to_list(1000)
+        if grinding_stores:
+            # Simple round-robin load balancing
+            store_index = len(await db.orders.find({}).to_list(1)) % len(grinding_stores)
+            selected_store = grinding_stores[store_index]
+        else:
+            selected_store = None
         
         order = Order(
             customer_id=current_user.id,
-            items=[OrderItem(**item) for item in order_data["items"]],
+            items=order_data["items"],
             delivery_address=order_data["delivery_address"],
             delivery_slot=order_data.get("delivery_slot"),
             delivery_date=datetime.fromisoformat(order_data["delivery_date"]) if order_data.get("delivery_date") else None,
-            grinding_store_id=grinding_store["id"] if grinding_store else None,
+            grinding_store_id=selected_store["id"] if selected_store else None,
             total_amount=total_amount,
             razorpay_order_id=razorpay_order["id"],
-            notes=order_data.get("notes")
+            notes=order_data.get("notes"),
+            priority=order_data.get("priority", 1)
         )
         
         await db.orders.insert_one(order.dict())
+        
+        # Clear user's order cache
+        redis_client.delete(f"orders:{current_user.id}")
+        
+        # Send notification
+        await send_notification(
+            current_user.id,
+            "Order created successfully! Proceed with payment.",
+            "order_created"
+        )
         
         return {
             "order_id": order.id,
@@ -495,7 +531,7 @@ async def verify_payment(verification_data: Dict[str, str]):
             raise HTTPException(status_code=400, detail="Invalid signature")
         
         # Update order status
-        await db.orders.update_one(
+        order_update = await db.orders.update_one(
             {"razorpay_order_id": verification_data["razorpay_order_id"]},
             {
                 "$set": {
@@ -507,6 +543,25 @@ async def verify_payment(verification_data: Dict[str, str]):
             }
         )
         
+        if order_update.modified_count > 0:
+            # Get order details
+            order = await db.orders.find_one({"razorpay_order_id": verification_data["razorpay_order_id"]})
+            if order:
+                # Clear cache
+                redis_client.delete(f"orders:{order['customer_id']}")
+                
+                # Send notification
+                await send_notification(
+                    order["customer_id"],
+                    "Payment successful! Your order has been confirmed.",
+                    "payment_success"
+                )
+                
+                # Schedule automatic status update
+                asyncio.create_task(
+                    process_order_status_update(order["id"], "grinding")
+                )
+        
         return {"status": "success", "message": "Payment verified successfully"}
         
     except Exception as e:
@@ -514,173 +569,84 @@ async def verify_payment(verification_data: Dict[str, str]):
 
 @api_router.get("/orders/my-orders")
 async def get_my_orders(current_user: User = Depends(get_current_user)):
-    orders = await db.orders.find({"customer_id": current_user.id}).to_list(1000)
-    return [Order(**order) for order in orders]
-
-@api_router.get("/orders/{order_id}")
-async def get_order(order_id: str, current_user: User = Depends(get_current_user)):
-    order = await db.orders.find_one({"id": order_id})
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-    
-    order_obj = Order(**order)
-    
-    # Check if user has access to this order
-    if current_user.role == "customer" and order_obj.customer_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Access denied")
-    
-    return order_obj
-
-@api_router.put("/orders/{order_id}/status")
-async def update_order_status(order_id: str, status_data: Dict[str, str], current_user: User = Depends(get_current_user)):
-    if current_user.role not in ["grinding_store", "admin", "delivery_boy"]:
-        raise HTTPException(status_code=403, detail="Access denied")
-    
-    new_status = status_data["status"]
-    
-    # Update order status
-    await db.orders.update_one(
-        {"id": order_id},
-        {
-            "$set": {
-                "status": new_status,
-                "updated_at": datetime.utcnow()
-            }
-        }
-    )
-    
-    # Add to status history
-    await db.order_status_history.insert_one({
-        "order_id": order_id,
-        "status": new_status,
-        "updated_by": current_user.id,
-        "notes": status_data.get("notes", ""),
-        "timestamp": datetime.utcnow()
-    })
-    
-    return {"message": "Order status updated successfully"}
-
-# Subscription Routes
-@api_router.post("/subscriptions")
-async def create_subscription(subscription_data: Dict[str, Any], current_user: User = Depends(get_current_user)):
     try:
-        # Create subscription plan with Razorpay
-        plan_data = {
-            "period": "weekly",
-            "interval": 1,
-            "item": {
-                "name": "Weekly Grain Delivery",
-                "amount": int(subscription_data["total_amount"] * 100),
-                "currency": "INR"
-            }
-        }
+        # Try cache first
+        cached_orders = redis_client.get(f"orders:{current_user.id}")
+        if cached_orders:
+            return json.loads(cached_orders)
         
-        razorpay_plan = razorpay_client.plan.create(plan_data)
+        # Get from database
+        orders = await db.orders.find({"customer_id": current_user.id}).sort("created_at", -1).to_list(1000)
+        order_objects = [Order(**order) for order in orders]
         
-        # Create subscription
-        subscription = Subscription(
-            customer_id=current_user.id,
-            items=[OrderItem(**item) for item in subscription_data["items"]],
-            delivery_address=subscription_data["delivery_address"],
-            delivery_slot=subscription_data["delivery_slot"],
-            delivery_day=subscription_data.get("delivery_day", "monday"),
-            total_amount=subscription_data["total_amount"],
-            next_delivery_date=datetime.fromisoformat(subscription_data["next_delivery_date"])
-        )
+        # Cache for 5 minutes
+        redis_client.setex(f"orders:{current_user.id}", 300, json.dumps([order.dict() for order in order_objects], default=str))
         
-        await db.subscriptions.insert_one(subscription.dict())
-        
-        return {"subscription_id": subscription.id, "plan_id": razorpay_plan["id"]}
-        
+        return order_objects
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@api_router.get("/subscriptions/my-subscriptions")
-async def get_my_subscriptions(current_user: User = Depends(get_current_user)):
-    subscriptions = await db.subscriptions.find({"customer_id": current_user.id}).to_list(1000)
-    return [Subscription(**sub) for sub in subscriptions]
+# WebSocket endpoint for real-time updates
+@app.websocket("/ws/{user_id}")
+async def websocket_endpoint(websocket: WebSocket, user_id: str):
+    await manager.connect(websocket, user_id)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            # Handle incoming messages if needed
+    except WebSocketDisconnect:
+        manager.disconnect(websocket, user_id)
 
-# Grinding Store Routes
-@api_router.get("/grinding-stores/orders")
-async def get_grinding_store_orders(current_user: User = Depends(get_current_user)):
-    if current_user.role != "grinding_store":
-        raise HTTPException(status_code=403, detail="Access denied")
-    
-    # Get grinding store info
-    grinding_store = await db.grinding_stores.find_one({"owner_id": current_user.id})
-    if not grinding_store:
-        raise HTTPException(status_code=404, detail="Grinding store not found")
-    
-    # Get orders assigned to this store
-    orders = await db.orders.find({
-        "grinding_store_id": grinding_store["id"],
-        "status": {"$in": ["confirmed", "grinding", "packing"]}
-    }).to_list(1000)
-    
-    # Group orders by location
-    order_objects = [Order(**order) for order in orders]
-    grouped_orders = await group_orders_by_location(order_objects)
-    
-    return {"orders": order_objects, "grouped_orders": grouped_orders}
+# Health check for load balancers
+@api_router.get("/health")
+async def health_check():
+    try:
+        # Check database connection
+        await db.command("ping")
+        
+        # Check Redis connection
+        redis_client.ping()
+        
+        return {
+            "status": "healthy",
+            "timestamp": datetime.utcnow().isoformat(),
+            "version": "2.1.0"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Service unhealthy: {str(e)}")
 
-# Delivery Boy Routes
-@api_router.get("/delivery/orders")
-async def get_delivery_orders(current_user: User = Depends(get_current_user)):
-    if current_user.role != "delivery_boy":
-        raise HTTPException(status_code=403, detail="Access denied")
-    
-    # Get delivery boy info
-    delivery_boy = await db.delivery_boys.find_one({"user_id": current_user.id})
-    if not delivery_boy:
-        raise HTTPException(status_code=404, detail="Delivery boy profile not found")
-    
-    # Get orders assigned to this delivery boy
-    orders = await db.orders.find({
-        "delivery_boy_id": delivery_boy["id"],
-        "status": {"$in": ["out_for_delivery", "delivered"]}
-    }).to_list(1000)
-    
-    return [Order(**order) for order in orders]
+# Metrics endpoint
+@api_router.get("/metrics")
+async def get_metrics():
+    try:
+        total_users = await db.users.count_documents({})
+        total_orders = await db.orders.count_documents({})
+        active_orders = await db.orders.count_documents({"status": {"$in": ["confirmed", "grinding", "packing", "out_for_delivery"]}})
+        
+        return {
+            "total_users": total_users,
+            "total_orders": total_orders,
+            "active_orders": active_orders,
+            "active_connections": len(manager.active_connections),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-# Admin Routes
-@api_router.post("/admin/grinding-stores")
-async def create_grinding_store(store_data: GrindingStore, current_user: User = Depends(get_current_user)):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Access denied")
-    
-    await db.grinding_stores.insert_one(store_data.dict())
-    return store_data
-
-@api_router.post("/admin/delivery-boys")
-async def create_delivery_boy(delivery_boy_data: DeliveryBoy, current_user: User = Depends(get_current_user)):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Access denied")
-    
-    await db.delivery_boys.insert_one(delivery_boy_data.dict())
-    return delivery_boy_data
-
-@api_router.get("/admin/dashboard")
-async def get_admin_dashboard(current_user: User = Depends(get_current_user)):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Access denied")
-    
-    # Get dashboard statistics
-    total_orders = await db.orders.count_documents({})
-    total_customers = await db.users.count_documents({"role": "customer"})
-    total_grinding_stores = await db.grinding_stores.count_documents({})
-    total_delivery_boys = await db.delivery_boys.count_documents({})
-    
-    return {
-        "total_orders": total_orders,
-        "total_customers": total_customers,
-        "total_grinding_stores": total_grinding_stores,
-        "total_delivery_boys": total_delivery_boys
-    }
-
-# Initialize data
+# Initialize data and start background tasks
 @app.on_event("startup")
 async def startup_event():
-    # Create initial grains data
+    # Create indexes for better performance
+    try:
+        await db.users.create_index("email", unique=True)
+        await db.orders.create_index([("customer_id", 1), ("created_at", -1)])
+        await db.orders.create_index("status")
+        await db.grains.create_index("category")
+        await db.grains.create_index("available")
+    except Exception as e:
+        logging.warning(f"Index creation warning: {e}")
+    
+    # Create initial grains data if not exists
     grain_count = await db.grains.count_documents({})
     if grain_count == 0:
         initial_grains = [
@@ -766,7 +732,7 @@ async def startup_event():
 # Include router
 app.include_router(api_router)
 
-# CORS
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -782,3 +748,4 @@ logger = logging.getLogger(__name__)
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
+    redis_client.close()
