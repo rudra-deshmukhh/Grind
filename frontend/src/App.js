@@ -790,19 +790,35 @@ const CustomerDashboard = () => {
 
   const fetchData = async () => {
     try {
-      const [grainsRes, grindOptionsRes, ordersRes, subscriptionsRes] = await Promise.all([
+      const [grainsRes, grindOptionsRes, cartRes] = await Promise.all([
         axios.get(`${API}/grains`),
         axios.get(`${API}/grind-options`),
-        axios.get(`${API}/orders/my-orders`),
-        axios.get(`${API}/subscriptions/my-subscriptions`)
+        axios.get(`${API}/cart`)
       ]);
 
       setGrains(grainsRes.data);
       setGrindOptions(grindOptionsRes.data);
-      setOrders(ordersRes.data);
-      setSubscriptions(subscriptionsRes.data);
+      setCart(cartRes.data);
+
+      // Fetch orders and subscriptions
+      try {
+        const ordersRes = await axios.get(`${API}/orders/my-orders`);
+        setOrders(ordersRes.data);
+      } catch (error) {
+        console.log('Orders not available yet');
+        setOrders([]);
+      }
+
+      try {
+        const subscriptionsRes = await axios.get(`${API}/subscriptions/my-subscriptions`);
+        setSubscriptions(subscriptionsRes.data);
+      } catch (error) {
+        console.log('Subscriptions not available yet');
+        setSubscriptions([]);
+      }
     } catch (error) {
       console.error('Error fetching data:', error);
+      showNotification('Error loading data. Please refresh.');
     } finally {
       setLoading(false);
     }
@@ -813,51 +829,104 @@ const CustomerDashboard = () => {
     setTimeout(() => setNotification(''), 3000);
   };
 
-  const addToCart = (item) => {
-    setCart([...cart, item]);
-    showNotification('Added to cart!');
+  const addToCart = async (item) => {
+    try {
+      await axios.post(`${API}/cart/add`, item);
+      fetchData(); // Refresh cart
+      showNotification('Added to cart!');
+    } catch (error) {
+      console.error('Error adding to cart:', error);
+      showNotification('Error adding to cart');
+    }
   };
 
-  const createOrder = async (items, deliveryAddress, deliverySlot, deliveryDate) => {
+  const removeFromCart = async (itemId) => {
     try {
+      await axios.delete(`${API}/cart/${itemId}`);
+      fetchData(); // Refresh cart
+      showNotification('Item removed from cart!');
+    } catch (error) {
+      console.error('Error removing from cart:', error);
+      showNotification('Error removing item');
+    }
+  };
+
+  const clearCart = async () => {
+    try {
+      await axios.delete(`${API}/cart`);
+      fetchData(); // Refresh cart
+      showNotification('Cart cleared!');
+    } catch (error) {
+      console.error('Error clearing cart:', error);
+      showNotification('Error clearing cart');
+    }
+  };
+
+  const createOrder = async (deliveryAddress, deliverySlot, deliveryDate) => {
+    try {
+      if (cart.length === 0) {
+        showNotification('Cart is empty!');
+        return;
+      }
+
+      const orderItems = cart.map(item => ({
+        id: item.id,
+        type: item.type,
+        grain_id: item.grain_id,
+        grain_name: item.grain_name,
+        quantity_kg: item.quantity_kg,
+        grains: item.grains,
+        grind_option: item.grind_option,
+        total_price: item.total_price
+      }));
+
       const response = await axios.post(`${API}/orders`, {
-        items,
+        items: orderItems,
         delivery_address: deliveryAddress,
         delivery_slot: deliverySlot,
         delivery_date: deliveryDate
       });
 
       // Initialize Razorpay payment
-      const options = {
-        key: response.data.key_id,
-        amount: response.data.amount,
-        currency: 'INR',
-        order_id: response.data.razorpay_order_id,
-        name: 'GrainCraft',
-        description: 'Grain Order Payment',
-        handler: async (paymentResponse) => {
-          try {
-            await axios.post(`${API}/orders/verify-payment`, {
-              razorpay_order_id: paymentResponse.razorpay_order_id,
-              razorpay_payment_id: paymentResponse.razorpay_payment_id,
-              razorpay_signature: paymentResponse.razorpay_signature
-            });
-            showNotification('Order placed successfully!');
-            setCart([]);
-            fetchData();
-          } catch (error) {
-            showNotification('Payment verification failed!');
+      if (window.Razorpay) {
+        const options = {
+          key: response.data.key_id,
+          amount: response.data.amount,
+          currency: 'INR',
+          order_id: response.data.razorpay_order_id,
+          name: 'GrainCraft',
+          description: 'Grain Order Payment',
+          handler: async (paymentResponse) => {
+            try {
+              await axios.post(`${API}/orders/verify-payment`, {
+                razorpay_order_id: paymentResponse.razorpay_order_id,
+                razorpay_payment_id: paymentResponse.razorpay_payment_id,
+                razorpay_signature: paymentResponse.razorpay_signature
+              });
+              showNotification('Order placed successfully!');
+              await clearCart();
+              fetchData();
+              setActiveTab('orders');
+            } catch (error) {
+              showNotification('Payment verification failed!');
+            }
+          },
+          prefill: {
+            name: `${user.first_name} ${user.last_name}`,
+            email: user.email
+          },
+          theme: {
+            color: '#D97706'
           }
-        },
-        prefill: {
-          name: `${user.first_name} ${user.last_name}`,
-          email: user.email
-        }
-      };
+        };
 
-      const rzp = new window.Razorpay(options);
-      rzp.open();
+        const rzp = new window.Razorpay(options);
+        rzp.open();
+      } else {
+        showNotification('Payment system not available');
+      }
     } catch (error) {
+      console.error('Order creation failed:', error);
       showNotification('Order creation failed!');
     }
   };
@@ -958,7 +1027,8 @@ const CustomerDashboard = () => {
         {activeTab === 'cart' && (
           <CartView
             cart={cart}
-            setCart={setCart}
+            onRemoveFromCart={removeFromCart}
+            onClearCart={clearCart}
             onCreateOrder={createOrder}
           />
         )}
