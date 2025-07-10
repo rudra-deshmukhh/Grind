@@ -647,14 +647,29 @@ async def get_my_orders(current_user: User = Depends(get_current_user)):
         
         # Get from database
         orders = await db.orders.find({"customer_id": current_user.id}).sort("created_at", -1).to_list(1000)
-        order_objects = [Order(**order) for order in orders]
+        
+        # Clean MongoDB data and convert ObjectIds
+        clean_orders = []
+        for order in orders:
+            clean_order = {}
+            for key, value in order.items():
+                if key == "_id":
+                    continue  # Skip MongoDB's _id field
+                elif isinstance(value, ObjectId):
+                    clean_order[key] = str(value)
+                elif isinstance(value, datetime):
+                    clean_order[key] = value.isoformat()
+                else:
+                    clean_order[key] = value
+            clean_orders.append(clean_order)
         
         # Cache for 5 minutes if Redis is available
         if redis_available and redis_client:
-            redis_client.setex(f"orders:{current_user.id}", 300, json.dumps([order.dict() for order in order_objects], default=str))
+            redis_client.setex(f"orders:{current_user.id}", 300, json.dumps(clean_orders, default=str))
         
-        return order_objects
+        return clean_orders
     except Exception as e:
+        logging.error(f"Error in get_my_orders: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Grinding Store Routes
