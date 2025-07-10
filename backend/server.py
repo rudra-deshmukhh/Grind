@@ -623,16 +623,293 @@ async def get_my_orders(current_user: User = Depends(get_current_user)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# WebSocket endpoint for real-time updates
-@app.websocket("/ws/{user_id}")
-async def websocket_endpoint(websocket: WebSocket, user_id: str):
-    await manager.connect(websocket, user_id)
+# Grinding Store Routes
+@api_router.get("/grinding-stores/orders")
+async def get_grinding_store_orders(current_user: User = Depends(get_current_user)):
+    if current_user.role != "grinding_store":
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Get grinding store info
+    grinding_store = await db.grinding_stores.find_one({"owner_id": current_user.id})
+    if not grinding_store:
+        # Create a default grinding store for demo
+        grinding_store = {
+            "id": str(uuid.uuid4()),
+            "name": f"{current_user.first_name}'s Grinding Store",
+            "owner_id": current_user.id,
+            "location": {"address": "Demo Location", "latitude": 0, "longitude": 0},
+            "is_active": True
+        }
+        await db.grinding_stores.insert_one(grinding_store)
+    
+    # Get orders assigned to this store
+    orders = await db.orders.find({
+        "grinding_store_id": grinding_store["id"],
+        "status": {"$in": ["confirmed", "grinding", "packing"]}
+    }).to_list(1000)
+    
+    return [Order(**order) for order in orders]
+
+# Delivery Boy Routes
+@api_router.get("/delivery/orders")
+async def get_delivery_orders(current_user: User = Depends(get_current_user)):
+    if current_user.role != "delivery_boy":
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Get delivery boy info
+    delivery_boy = await db.delivery_boys.find_one({"user_id": current_user.id})
+    if not delivery_boy:
+        # Create a default delivery boy profile for demo
+        delivery_boy = {
+            "id": str(uuid.uuid4()),
+            "user_id": current_user.id,
+            "license_number": "DEMO123",
+            "vehicle_type": "Motorcycle",
+            "is_available": True
+        }
+        await db.delivery_boys.insert_one(delivery_boy)
+    
+    # Get orders assigned to this delivery boy
+    orders = await db.orders.find({
+        "delivery_boy_id": delivery_boy["id"],
+        "status": {"$in": ["out_for_delivery", "delivered"]}
+    }).to_list(1000)
+    
+    return [Order(**order) for order in orders]
+
+# Cart management routes
+@api_router.post("/cart/add")
+async def add_to_cart(item_data: Dict[str, Any], current_user: User = Depends(get_current_user)):
     try:
-        while True:
-            data = await websocket.receive_text()
-            # Handle incoming messages if needed
-    except WebSocketDisconnect:
-        manager.disconnect(websocket, user_id)
+        total_price = 0.0
+        
+        if item_data["type"] == "individual":
+            # Calculate price for individual grain
+            grain = await db.grains.find_one({"id": item_data["grain_id"]})
+            if not grain:
+                raise HTTPException(status_code=404, detail="Grain not found")
+            
+            base_price = grain["price_per_kg"] * item_data["quantity_kg"]
+            grind_cost = item_data.get("grind_option", {}).get("additional_cost", 0.0)
+            total_price = base_price + grind_cost
+            
+            cart_item = {
+                "id": str(uuid.uuid4()),
+                "type": "individual",
+                "grain_id": item_data["grain_id"],
+                "grain_name": grain["name"],
+                "quantity_kg": item_data["quantity_kg"],
+                "grind_option": item_data.get("grind_option"),
+                "total_price": total_price,
+                "user_id": current_user.id
+            }
+        
+        elif item_data["type"] == "mix":
+            # Calculate price for custom mix
+            base_price = sum(grain_item["price_per_kg"] * grain_item["quantity_kg"] for grain_item in item_data["grains"])
+            grind_cost = item_data.get("grind_option", {}).get("additional_cost", 0.0)
+            total_price = base_price + grind_cost
+            
+            cart_item = {
+                "id": str(uuid.uuid4()),
+                "type": "mix",
+                "grains": item_data["grains"],
+                "grind_option": item_data.get("grind_option"),
+                "total_price": total_price,
+                "user_id": current_user.id
+            }
+        
+        else:
+            raise HTTPException(status_code=400, detail="Invalid item type")
+        
+        # Store in database (simple cart storage)
+        await db.cart.insert_one(cart_item)
+        return cart_item
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/cart")
+async def get_cart(current_user: User = Depends(get_current_user)):
+    try:
+        cart_items = await db.cart.find({"user_id": current_user.id}).to_list(1000)
+        return cart_items
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.delete("/cart/{item_id}")
+async def remove_from_cart(item_id: str, current_user: User = Depends(get_current_user)):
+    try:
+        result = await db.cart.delete_one({"id": item_id, "user_id": current_user.id})
+        if result.deleted_count == 0:
+            raise HTTPException(status_code=404, detail="Cart item not found")
+        return {"message": "Item removed from cart"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.delete("/cart")
+async def clear_cart(current_user: User = Depends(get_current_user)):
+    try:
+        await db.cart.delete_many({"user_id": current_user.id})
+        return {"message": "Cart cleared"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Order status update route
+@api_router.put("/orders/{order_id}/status")
+async def update_order_status(order_id: str, status_data: Dict[str, str], current_user: User = Depends(get_current_user)):
+    if current_user.role not in ["grinding_store", "admin", "delivery_boy"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    new_status = status_data["status"]
+    
+    # Update order status
+    await db.orders.update_one(
+        {"id": order_id},
+        {
+            "$set": {
+                "status": new_status,
+                "updated_at": datetime.utcnow()
+            }
+        }
+    )
+    
+    # Add to status history
+    await db.order_status_history.insert_one({
+        "order_id": order_id,
+        "status": new_status,
+        "updated_by": current_user.id,
+        "notes": status_data.get("notes", ""),
+        "timestamp": datetime.utcnow()
+    })
+    
+    # Clear cache if Redis is available
+    order = await db.orders.find_one({"id": order_id})
+    if order and redis_available and redis_client:
+        redis_client.delete(f"orders:{order['customer_id']}")
+    
+    return {"message": "Order status updated successfully"}
+
+# Subscription routes
+@api_router.post("/subscriptions")
+async def create_subscription(subscription_data: Dict[str, Any], current_user: User = Depends(get_current_user)):
+    try:
+        # Create subscription plan with Razorpay
+        plan_data = {
+            "period": "weekly",
+            "interval": 1,
+            "item": {
+                "name": "Weekly Grain Delivery",
+                "amount": int(subscription_data["total_amount"] * 100),
+                "currency": "INR"
+            }
+        }
+        
+        # For demo, create a simple plan without Razorpay
+        subscription = {
+            "id": str(uuid.uuid4()),
+            "customer_id": current_user.id,
+            "items": subscription_data["items"],
+            "delivery_address": subscription_data["delivery_address"],
+            "delivery_slot": subscription_data["delivery_slot"],
+            "delivery_day": subscription_data.get("delivery_day", "monday"),
+            "total_amount": subscription_data["total_amount"],
+            "next_delivery_date": subscription_data["next_delivery_date"],
+            "status": "active",
+            "created_at": datetime.utcnow()
+        }
+        
+        await db.subscriptions.insert_one(subscription)
+        
+        return {"subscription_id": subscription["id"], "status": "created"}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/subscriptions/my-subscriptions")
+async def get_my_subscriptions(current_user: User = Depends(get_current_user)):
+    try:
+        subscriptions = await db.subscriptions.find({"customer_id": current_user.id}).to_list(1000)
+        return subscriptions
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Grind options route
+@api_router.get("/grind-options")
+async def get_grind_options():
+    return [
+        {"type": "whole", "description": "Whole grains (no grinding)", "additional_cost": 0.0, "processing_time_minutes": 0},
+        {"type": "coarse", "description": "Coarse grind - chunky texture", "additional_cost": 5.0, "processing_time_minutes": 5},
+        {"type": "medium", "description": "Medium grind - balanced texture", "additional_cost": 8.0, "processing_time_minutes": 8},
+        {"type": "fine", "description": "Fine grind - smooth texture", "additional_cost": 12.0, "processing_time_minutes": 12},
+        {"type": "powder", "description": "Powder grind - very fine flour", "additional_cost": 15.0, "processing_time_minutes": 15}
+    ]
+
+# Admin routes for managing grains
+@api_router.post("/grains")
+async def create_grain(grain_data: Dict[str, Any], current_user: User = Depends(get_current_user)):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can create grains")
+    
+    grain = Grain(
+        name=grain_data["name"],
+        description=grain_data["description"],
+        price_per_kg=grain_data["price_per_kg"],
+        image_url=grain_data["image_url"],
+        category=grain_data["category"],
+        stock_kg=grain_data.get("stock_kg", 100.0),
+        created_by=current_user.id
+    )
+    
+    await db.grains.insert_one(grain.dict())
+    
+    # Clear grains cache if Redis is available
+    if redis_available and redis_client:
+        redis_client.delete("grains:all")
+    
+    return grain
+
+# Admin routes for managing stores
+@api_router.post("/admin/grinding-stores")
+async def create_grinding_store(store_data: Dict[str, Any], current_user: User = Depends(get_current_user)):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    store = {
+        "id": str(uuid.uuid4()),
+        "name": store_data["name"],
+        "owner_id": store_data["owner_id"],
+        "location": store_data["location"],
+        "capacity_kg_per_day": store_data.get("capacity_kg_per_day", 100.0),
+        "contact_info": store_data.get("contact_info", {}),
+        "operating_hours": store_data.get("operating_hours", {}),
+        "services": store_data.get("services", []),
+        "is_active": True,
+        "created_at": datetime.utcnow()
+    }
+    
+    await db.grinding_stores.insert_one(store)
+    return store
+
+@api_router.post("/admin/delivery-boys")
+async def create_delivery_boy(delivery_boy_data: Dict[str, Any], current_user: User = Depends(get_current_user)):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    delivery_boy = {
+        "id": str(uuid.uuid4()),
+        "user_id": delivery_boy_data["user_id"],
+        "license_number": delivery_boy_data["license_number"],
+        "vehicle_type": delivery_boy_data["vehicle_type"],
+        "current_location": delivery_boy_data.get("current_location", {"latitude": 0, "longitude": 0}),
+        "assigned_area": delivery_boy_data.get("assigned_area", {}),
+        "is_available": True,
+        "rating": 5.0,
+        "created_at": datetime.utcnow()
+    }
+    
+    await db.delivery_boys.insert_one(delivery_boy)
+    return delivery_boy
 
 # Health check for load balancers
 @api_router.get("/health")
