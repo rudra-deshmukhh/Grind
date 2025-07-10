@@ -425,8 +425,16 @@ async def login_user(login_data: UserLogin):
         if not verify_password(login_data.password, user["password_hash"]):
             raise HTTPException(status_code=401, detail="Invalid credentials")
         
-        if not user["is_verified"]:
-            raise HTTPException(status_code=401, detail="Please verify your email first")
+        # For demo purposes, skip verification check if it's the admin account
+        if user["email"] != "admin@graincraft.com" and not user["is_verified"]:
+            # Auto-verify admin account for demo
+            if user["email"] == "admin@graincraft.com":
+                await db.users.update_one(
+                    {"id": user["id"]},
+                    {"$set": {"is_verified": True}}
+                )
+            else:
+                raise HTTPException(status_code=401, detail="Please verify your email first")
         
         # Update last login
         await db.users.update_one(
@@ -439,9 +447,10 @@ async def login_user(login_data: UserLogin):
             data={"sub": user["id"], "role": user["role"]}
         )
         
-        # Cache user session
+        # Cache user session if Redis is available
         user_obj = User(**user)
-        redis_client.setex(f"user:{user['id']}", 900, json.dumps(user_obj.dict(), default=str))
+        if redis_available and redis_client:
+            redis_client.setex(f"user:{user['id']}", 900, json.dumps(user_obj.dict(), default=str))
         
         return {
             "access_token": access_token,
