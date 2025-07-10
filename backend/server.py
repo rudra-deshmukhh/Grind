@@ -758,7 +758,8 @@ async def add_to_cart(item_data: Dict[str, Any], current_user: User = Depends(ge
                 "quantity_kg": item_data["quantity_kg"],
                 "grind_option": item_data.get("grind_option"),
                 "total_price": total_price,
-                "user_id": current_user.id
+                "user_id": current_user.id,
+                "created_at": datetime.utcnow()
             }
         
         elif item_data["type"] == "mix":
@@ -773,17 +774,25 @@ async def add_to_cart(item_data: Dict[str, Any], current_user: User = Depends(ge
                 "grains": item_data["grains"],
                 "grind_option": item_data.get("grind_option"),
                 "total_price": total_price,
-                "user_id": current_user.id
+                "user_id": current_user.id,
+                "created_at": datetime.utcnow()
             }
         
         else:
             raise HTTPException(status_code=400, detail="Invalid item type")
         
-        # Store in database (simple cart storage)
+        # Store in database
         await db.cart.insert_one(cart_item)
-        return cart_item
+        
+        # Return clean cart item (removing MongoDB _id)
+        clean_item = {k: v for k, v in cart_item.items() if k != "_id"}
+        if "created_at" in clean_item and isinstance(clean_item["created_at"], datetime):
+            clean_item["created_at"] = clean_item["created_at"].isoformat()
+        
+        return clean_item
         
     except Exception as e:
+        logging.error(f"Error in add_to_cart: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.get("/cart")
