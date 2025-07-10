@@ -258,13 +258,24 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         if user is None:
             raise HTTPException(status_code=401, detail="User not found")
         
+        # Convert ObjectId to string and clean data
+        user_dict = {}
+        for key, value in user.items():
+            if key == "_id":
+                continue  # Skip MongoDB's _id field
+            elif isinstance(value, ObjectId):
+                user_dict[key] = str(value)
+            else:
+                user_dict[key] = value
+        
         # Cache user for 15 minutes if Redis is available
-        user_obj = User(**user)
+        user_obj = User(**user_dict)
         if redis_available and redis_client:
             redis_client.setex(f"user:{user_id}", 900, json.dumps(user_obj.dict(), default=str))
         
         return user_obj
     except Exception as e:
+        logging.error(f"Error in get_current_user: {e}")
         raise HTTPException(status_code=401, detail="Invalid authentication credentials")
 
 def generate_otp() -> str:
