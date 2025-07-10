@@ -653,19 +653,25 @@ async def health_check():
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Service unhealthy: {str(e)}")
 
-# Metrics endpoint
-@api_router.get("/metrics")
-async def get_metrics():
+# Admin dashboard endpoint
+@api_router.get("/admin/dashboard")
+async def admin_dashboard(current_user: User = Depends(get_current_user)):
     try:
-        total_users = await db.users.count_documents({})
+        # Check if user is admin
+        if current_user.role != "admin":
+            raise HTTPException(status_code=403, detail="Not authorized")
+        
+        # Get dashboard stats
         total_orders = await db.orders.count_documents({})
-        active_orders = await db.orders.count_documents({"status": {"$in": ["confirmed", "grinding", "packing", "out_for_delivery"]}})
+        total_customers = await db.users.count_documents({"role": "customer"})
+        total_grinding_stores = await db.users.count_documents({"role": "grinding_store"})
+        total_delivery_boys = await db.users.count_documents({"role": "delivery_boy"})
         
         return {
-            "total_users": total_users,
             "total_orders": total_orders,
-            "active_orders": active_orders,
-            "active_connections": len(manager.active_connections),
+            "total_customers": total_customers,
+            "total_grinding_stores": total_grinding_stores,
+            "total_delivery_boys": total_delivery_boys,
             "timestamp": datetime.utcnow().isoformat()
         }
     except Exception as e:
