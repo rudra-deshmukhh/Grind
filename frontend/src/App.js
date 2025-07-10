@@ -1274,104 +1274,451 @@ const DeliveryBoyDashboard = () => {
 };
 
 // Placeholder components for customer features
-const GrainCatalog = ({ grains, grindOptions, onAddToCart }) => (
-  <div>
-    <h2 className="text-3xl font-bold text-amber-900 mb-8">Premium Grains</h2>
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-      {grains.map((grain) => (
-        <div key={grain.id} className="bg-white rounded-xl shadow-lg overflow-hidden">
-          <img src={grain.image_url} alt={grain.name} className="w-full h-48 object-cover" />
-          <div className="p-6">
-            <h3 className="text-xl font-bold text-amber-900 mb-2">{grain.name}</h3>
-            <p className="text-gray-600 mb-4">{grain.description}</p>
-            <div className="text-2xl font-bold text-amber-600 mb-4">
-              ₹{grain.price_per_kg}/kg
-            </div>
-            <button
-              onClick={() => onAddToCart({
-                id: grain.id,
-                name: grain.name,
-                price: grain.price_per_kg,
-                quantity: 1
-              })}
-              className="w-full bg-amber-600 text-white py-2 px-4 rounded-lg hover:bg-amber-700"
-            >
-              Add to Cart
-            </button>
-          </div>
-        </div>
-      ))}
-    </div>
-  </div>
-);
+const GrainCatalog = ({ grains, grindOptions, onAddToCart }) => {
+  const [selectedGrain, setSelectedGrain] = useState(null);
+  const [quantity, setQuantity] = useState(1);
+  const [selectedGrind, setSelectedGrind] = useState(null);
 
-const MixBuilder = ({ grains, grindOptions, mixBuilder, setMixBuilder, onAddToCart }) => (
-  <div>
-    <h2 className="text-3xl font-bold text-amber-900 mb-8">Custom Mix Builder</h2>
-    <div className="bg-white rounded-lg shadow p-6">
-      <p className="text-gray-600 mb-4">Create your custom grain mix</p>
-      <div className="space-y-4">
+  const handleAddToCart = (grain) => {
+    if (!selectedGrind) {
+      alert('Please select a grind option');
+      return;
+    }
+
+    const cartItem = {
+      type: 'individual',
+      grain_id: grain.id,
+      quantity_kg: quantity,
+      grind_option: selectedGrind
+    };
+
+    onAddToCart(cartItem);
+    setSelectedGrain(null);
+    setQuantity(1);
+    setSelectedGrind(null);
+  };
+
+  return (
+    <div>
+      <h2 className="text-3xl font-bold text-amber-900 mb-8">Premium Grains</h2>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
         {grains.map((grain) => (
-          <div key={grain.id} className="flex items-center justify-between p-4 border rounded">
-            <div>
-              <h4 className="font-semibold">{grain.name}</h4>
-              <p className="text-sm text-gray-600">₹{grain.price_per_kg}/kg</p>
+          <div key={grain.id} className="bg-white rounded-xl shadow-lg overflow-hidden">
+            <img src={grain.image_url} alt={grain.name} className="w-full h-48 object-cover" />
+            <div className="p-6">
+              <h3 className="text-xl font-bold text-amber-900 mb-2">{grain.name}</h3>
+              <p className="text-gray-600 mb-4">{grain.description}</p>
+              <div className="text-2xl font-bold text-amber-600 mb-4">
+                ₹{grain.price_per_kg}/kg
+              </div>
+              
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Quantity (kg)
+                  </label>
+                  <input
+                    type="number"
+                    min="0.1"
+                    step="0.1"
+                    value={quantity}
+                    onChange={(e) => setQuantity(parseFloat(e.target.value))}
+                    className="w-full p-2 border border-gray-300 rounded-md"
+                  />
+                </div>
+                
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Grind Option
+                  </label>
+                  <select
+                    value={selectedGrind?.type || ''}
+                    onChange={(e) => {
+                      const grind = grindOptions.find(g => g.type === e.target.value);
+                      setSelectedGrind(grind);
+                    }}
+                    className="w-full p-2 border border-gray-300 rounded-md"
+                  >
+                    <option value="">Select grind option</option>
+                    {grindOptions.map(grind => (
+                      <option key={grind.type} value={grind.type}>
+                        {grind.description} {grind.additional_cost > 0 && `(+₹${grind.additional_cost})`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                
+                <button
+                  onClick={() => handleAddToCart(grain)}
+                  className="w-full bg-amber-600 text-white py-2 px-4 rounded-lg hover:bg-amber-700 transition-colors"
+                >
+                  Add to Cart
+                </button>
+              </div>
             </div>
-            <button
-              onClick={() => onAddToCart({
-                id: grain.id,
-                name: grain.name,
-                price: grain.price_per_kg,
-                quantity: 1
-              })}
-              className="bg-amber-600 text-white px-4 py-2 rounded hover:bg-amber-700"
-            >
-              Add to Mix
-            </button>
           </div>
         ))}
       </div>
     </div>
-  </div>
-);
+  );
+};
 
-const CartView = ({ cart, setCart, onCreateOrder }) => (
-  <div>
-    <h2 className="text-3xl font-bold text-amber-900 mb-8">Shopping Cart</h2>
-    {cart.length === 0 ? (
-      <div className="text-center py-16">
-        <p className="text-gray-500 text-lg">Your cart is empty</p>
+const MixBuilder = ({ grains, grindOptions, mixBuilder, setMixBuilder, onAddToCart }) => {
+  const addToMix = (grain, quantity) => {
+    if (!quantity || quantity <= 0) {
+      alert('Please enter a valid quantity');
+      return;
+    }
+
+    const existingIndex = mixBuilder.grains.findIndex(g => g.grain_id === grain.id);
+    
+    if (existingIndex >= 0) {
+      const updatedGrains = [...mixBuilder.grains];
+      updatedGrains[existingIndex].quantity_kg = quantity;
+      setMixBuilder({ ...mixBuilder, grains: updatedGrains });
+    } else {
+      setMixBuilder({
+        ...mixBuilder,
+        grains: [...mixBuilder.grains, {
+          grain_id: grain.id,
+          grain_name: grain.name,
+          quantity_kg: quantity,
+          price_per_kg: grain.price_per_kg
+        }]
+      });
+    }
+  };
+
+  const removeFromMix = (grainId) => {
+    setMixBuilder({
+      ...mixBuilder,
+      grains: mixBuilder.grains.filter(g => g.grain_id !== grainId)
+    });
+  };
+
+  const handleAddMixToCart = () => {
+    if (mixBuilder.grains.length === 0) {
+      alert('Please add at least one grain to your mix!');
+      return;
+    }
+
+    if (!mixBuilder.grindOption) {
+      alert('Please select a grind option for your mix!');
+      return;
+    }
+
+    const cartItem = {
+      type: 'mix',
+      grains: mixBuilder.grains,
+      grind_option: mixBuilder.grindOption
+    };
+
+    onAddToCart(cartItem);
+    setMixBuilder({ grains: [], grindOption: null });
+  };
+
+  return (
+    <div>
+      <h2 className="text-3xl font-bold text-amber-900 mb-8">Custom Mix Builder</h2>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        <div>
+          <h3 className="text-xl font-semibold mb-4">Select Grains for Your Mix</h3>
+          <div className="space-y-4">
+            {grains.map((grain) => (
+              <MixGrainSelector
+                key={grain.id}
+                grain={grain}
+                onAddToMix={addToMix}
+              />
+            ))}
+          </div>
+        </div>
+        <div>
+          <MixPreview
+            mixBuilder={mixBuilder}
+            grindOptions={grindOptions}
+            onRemoveFromMix={removeFromMix}
+            onSelectGrind={(grind) => setMixBuilder({ ...mixBuilder, grindOption: grind })}
+            onAddToCart={handleAddMixToCart}
+          />
+        </div>
       </div>
-    ) : (
-      <div className="space-y-4">
-        {cart.map((item, index) => (
-          <div key={index} className="bg-white p-6 rounded-lg shadow">
-            <div className="flex justify-between items-center">
+    </div>
+  );
+};
+
+const MixGrainSelector = ({ grain, onAddToMix }) => {
+  const [quantity, setQuantity] = useState('');
+
+  const handleAdd = () => {
+    if (quantity && parseFloat(quantity) > 0) {
+      onAddToMix(grain, parseFloat(quantity));
+      setQuantity('');
+    }
+  };
+
+  return (
+    <div className="bg-white p-4 rounded-lg shadow flex items-center space-x-4">
+      <img
+        src={grain.image_url}
+        alt={grain.name}
+        className="w-16 h-16 object-cover rounded-lg"
+      />
+      <div className="flex-1">
+        <h4 className="font-semibold text-amber-900">{grain.name}</h4>
+        <p className="text-sm text-gray-600">₹{grain.price_per_kg}/kg</p>
+      </div>
+      <div className="flex items-center space-x-2">
+        <input
+          type="number"
+          placeholder="kg"
+          min="0.1"
+          step="0.1"
+          value={quantity}
+          onChange={(e) => setQuantity(e.target.value)}
+          className="w-20 p-2 border border-gray-300 rounded-md text-sm"
+        />
+        <button
+          onClick={handleAdd}
+          className="bg-amber-600 text-white px-4 py-2 rounded-md text-sm hover:bg-amber-700"
+        >
+          Add
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const MixPreview = ({ mixBuilder, grindOptions, onRemoveFromMix, onSelectGrind, onAddToCart }) => {
+  const calculateMixPrice = () => {
+    const basePrice = mixBuilder.grains.reduce((sum, grain) => 
+      sum + (grain.price_per_kg * grain.quantity_kg), 0);
+    const grindCost = mixBuilder.grindOption?.additional_cost || 0;
+    return basePrice + grindCost;
+  };
+
+  return (
+    <div className="bg-white p-6 rounded-lg shadow-lg">
+      <h3 className="text-xl font-semibold mb-4">Your Custom Mix</h3>
+      
+      {mixBuilder.grains.length === 0 ? (
+        <p className="text-gray-500 text-center py-8">No grains added yet</p>
+      ) : (
+        <div className="space-y-3 mb-6">
+          {mixBuilder.grains.map((grain) => (
+            <div key={grain.grain_id} className="flex justify-between items-center p-3 bg-amber-50 rounded-lg">
               <div>
-                <h3 className="font-semibold">{item.name}</h3>
-                <p className="text-gray-600">Quantity: {item.quantity}</p>
+                <span className="font-medium">{grain.grain_name}</span>
+                <span className="text-sm text-gray-600 ml-2">
+                  {grain.quantity_kg}kg × ₹{grain.price_per_kg}
+                </span>
               </div>
-              <div className="text-xl font-bold text-amber-600">
-                ₹{(item.price * item.quantity).toFixed(2)}
+              <button
+                onClick={() => onRemoveFromMix(grain.grain_id)}
+                className="text-red-500 hover:text-red-700"
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      
+      {mixBuilder.grains.length > 0 && (
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Grind Option
+            </label>
+            <select
+              value={mixBuilder.grindOption?.type || ''}
+              onChange={(e) => {
+                const grind = grindOptions.find(g => g.type === e.target.value);
+                onSelectGrind(grind);
+              }}
+              className="w-full p-2 border border-gray-300 rounded-md"
+            >
+              <option value="">Select grind option</option>
+              {grindOptions.map(grind => (
+                <option key={grind.type} value={grind.type}>
+                  {grind.description} {grind.additional_cost > 0 && `(+₹${grind.additional_cost})`}
+                </option>
+              ))}
+            </select>
+          </div>
+          
+          <div className="bg-amber-100 p-4 rounded-lg">
+            <div className="flex justify-between items-center mb-2">
+              <span>Total Weight:</span>
+              <span>{mixBuilder.grains.reduce((sum, g) => sum + g.quantity_kg, 0).toFixed(1)}kg</span>
+            </div>
+            <div className="flex justify-between items-center font-bold text-lg">
+              <span>Total Price:</span>
+              <span>₹{calculateMixPrice().toFixed(2)}</span>
+            </div>
+          </div>
+          
+          <button
+            onClick={onAddToCart}
+            className="w-full bg-amber-600 text-white py-3 px-4 rounded-lg hover:bg-amber-700 transition-colors"
+          >
+            Add Mix to Cart
+          </button>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const CartView = ({ cart, onRemoveFromCart, onClearCart, onCreateOrder }) => {
+  const [deliveryAddress, setDeliveryAddress] = useState({
+    address: '123 Main Street, City, State',
+    latitude: 0,
+    longitude: 0
+  });
+  const [deliverySlot, setDeliverySlot] = useState('morning');
+  const [deliveryDate, setDeliveryDate] = useState(new Date().toISOString().split('T')[0]);
+
+  const totalCartValue = cart.reduce((sum, item) => sum + item.total_price, 0);
+
+  const handleCheckout = () => {
+    if (cart.length === 0) {
+      alert('Cart is empty!');
+      return;
+    }
+    onCreateOrder(deliveryAddress, deliverySlot, deliveryDate);
+  };
+
+  return (
+    <div>
+      <div className="flex justify-between items-center mb-8">
+        <h2 className="text-3xl font-bold text-amber-900">Shopping Cart</h2>
+        {cart.length > 0 && (
+          <button
+            onClick={onClearCart}
+            className="bg-red-500 text-white px-4 py-2 rounded-lg hover:bg-red-600"
+          >
+            Clear Cart
+          </button>
+        )}
+      </div>
+      {cart.length === 0 ? (
+        <div className="text-center py-16">
+          <p className="text-gray-500 text-lg">Your cart is empty</p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {cart.map((item) => (
+            <CartItem
+              key={item.id}
+              item={item}
+              onRemove={() => onRemoveFromCart(item.id)}
+            />
+          ))}
+          
+          {/* Delivery Options */}
+          <div className="bg-white p-6 rounded-lg shadow">
+            <h3 className="text-lg font-semibold mb-4">Delivery Details</h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Delivery Address
+                </label>
+                <input
+                  type="text"
+                  value={deliveryAddress.address}
+                  onChange={(e) => setDeliveryAddress({...deliveryAddress, address: e.target.value})}
+                  className="w-full p-2 border border-gray-300 rounded-md"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Delivery Slot
+                </label>
+                <select
+                  value={deliverySlot}
+                  onChange={(e) => setDeliverySlot(e.target.value)}
+                  className="w-full p-2 border border-gray-300 rounded-md"
+                >
+                  <option value="morning">Morning (9AM-12PM)</option>
+                  <option value="afternoon">Afternoon (12PM-4PM)</option>
+                  <option value="evening">Evening (4PM-7PM)</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Delivery Date
+                </label>
+                <input
+                  type="date"
+                  value={deliveryDate}
+                  onChange={(e) => setDeliveryDate(e.target.value)}
+                  min={new Date().toISOString().split('T')[0]}
+                  className="w-full p-2 border border-gray-300 rounded-md"
+                />
               </div>
             </div>
           </div>
-        ))}
-        <div className="bg-amber-100 p-6 rounded-lg">
-          <div className="flex justify-between items-center">
-            <span className="text-xl font-bold">Total: ₹{cart.reduce((sum, item) => sum + (item.price * item.quantity), 0).toFixed(2)}</span>
-            <button
-              onClick={() => onCreateOrder(cart, { address: "123 Main St" }, "morning", new Date().toISOString())}
-              className="bg-amber-600 text-white px-8 py-3 rounded-lg hover:bg-amber-700"
-            >
-              Checkout
-            </button>
+
+          <div className="bg-amber-100 p-6 rounded-lg">
+            <div className="flex justify-between items-center text-xl font-bold text-amber-900">
+              <span>Total: ₹{totalCartValue.toFixed(2)}</span>
+              <button 
+                onClick={handleCheckout}
+                className="bg-amber-600 text-white px-8 py-3 rounded-lg hover:bg-amber-700"
+              >
+                Checkout
+              </button>
+            </div>
           </div>
         </div>
+      )}
+    </div>
+  );
+};
+
+const CartItem = ({ item, onRemove }) => {
+  return (
+    <div className="bg-white p-6 rounded-lg shadow">
+      <div className="flex justify-between items-start">
+        <div className="flex-1">
+          {item.type === 'individual' ? (
+            <div>
+              <h3 className="text-lg font-semibold text-amber-900">{item.grain_name}</h3>
+              <p className="text-gray-600">Quantity: {item.quantity_kg}kg</p>
+              {item.grind_option && (
+                <p className="text-gray-600">Grind: {item.grind_option.description}</p>
+              )}
+            </div>
+          ) : (
+            <div>
+              <h3 className="text-lg font-semibold text-amber-900">Custom Mix</h3>
+              <div className="text-gray-600">
+                {item.grains.map(grain => (
+                  <div key={grain.grain_id}>
+                    {grain.grain_name}: {grain.quantity_kg}kg
+                  </div>
+                ))}
+              </div>
+              {item.grind_option && (
+                <p className="text-gray-600">Grind: {item.grind_option.description}</p>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="text-right">
+          <div className="text-xl font-bold text-amber-600">₹{item.total_price.toFixed(2)}</div>
+          <button
+            onClick={onRemove}
+            className="mt-2 text-red-500 hover:text-red-700"
+          >
+            Remove
+          </button>
+        </div>
       </div>
-    )}
-  </div>
-);
+    </div>
+  );
+};
 
 const OrdersView = ({ orders }) => (
   <div>
@@ -1387,16 +1734,20 @@ const OrdersView = ({ orders }) => (
             <div className="flex justify-between items-start">
               <div>
                 <h3 className="font-semibold">Order #{order.id.slice(-6)}</h3>
-                <p className="text-gray-600">Status: {order.status}</p>
+                <p className="text-gray-600">Status: {order.status.replace('_', ' ')}</p>
                 <p className="text-gray-600">Total: ₹{order.total_amount}</p>
+                <p className="text-gray-600">
+                  Created: {new Date(order.created_at).toLocaleDateString()}
+                </p>
               </div>
               <div className="text-right">
                 <span className={`px-3 py-1 rounded-full text-sm ${
                   order.status === 'delivered' ? 'bg-green-100 text-green-800' :
                   order.status === 'out_for_delivery' ? 'bg-blue-100 text-blue-800' :
-                  'bg-yellow-100 text-yellow-800'
+                  order.payment_status === 'paid' ? 'bg-yellow-100 text-yellow-800' :
+                  'bg-gray-100 text-gray-800'
                 }`}>
-                  {order.status}
+                  {order.status.replace('_', ' ')}
                 </span>
               </div>
             </div>
@@ -1424,6 +1775,9 @@ const SubscriptionsView = ({ subscriptions }) => (
             <h3 className="font-semibold">Weekly Delivery</h3>
             <p className="text-gray-600">Status: {subscription.status}</p>
             <p className="text-gray-600">Amount: ₹{subscription.total_amount}</p>
+            <p className="text-gray-600">
+              Next Delivery: {new Date(subscription.next_delivery_date).toLocaleDateString()}
+            </p>
           </div>
         ))}
       </div>
