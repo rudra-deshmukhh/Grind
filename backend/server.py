@@ -425,16 +425,15 @@ async def login_user(login_data: UserLogin):
         if not verify_password(login_data.password, user["password_hash"]):
             raise HTTPException(status_code=401, detail="Invalid credentials")
         
-        # For demo purposes, skip verification check if it's the admin account
-        if user["email"] != "admin@graincraft.com" and not user["is_verified"]:
+        # For demo purposes, skip verification check for admin account
+        if user["email"] == "admin@graincraft.com":
             # Auto-verify admin account for demo
-            if user["email"] == "admin@graincraft.com":
-                await db.users.update_one(
-                    {"id": user["id"]},
-                    {"$set": {"is_verified": True}}
-                )
-            else:
-                raise HTTPException(status_code=401, detail="Please verify your email first")
+            await db.users.update_one(
+                {"id": user["id"]},
+                {"$set": {"is_verified": True}}
+            )
+        elif not user["is_verified"]:
+            raise HTTPException(status_code=401, detail="Please verify your email first")
         
         # Update last login
         await db.users.update_one(
