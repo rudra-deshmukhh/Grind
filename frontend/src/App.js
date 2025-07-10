@@ -6,6 +6,120 @@ import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate, useLocat
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
+// Service Worker Registration
+const registerServiceWorker = () => {
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js')
+        .then((registration) => {
+          console.log('SW registered: ', registration);
+          
+          // Check for updates
+          registration.addEventListener('updatefound', () => {
+            const newWorker = registration.installing;
+            newWorker.addEventListener('statechange', () => {
+              if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                // New content is available
+                if (window.confirm('New version available! Reload to update?')) {
+                  window.location.reload();
+                }
+              }
+            });
+          });
+        })
+        .catch((registrationError) => {
+          console.log('SW registration failed: ', registrationError);
+        });
+    });
+  }
+};
+
+// PWA Install Prompt
+const usePWAInstall = () => {
+  const [deferredPrompt, setDeferredPrompt] = useState(null);
+  const [showInstallPrompt, setShowInstallPrompt] = useState(false);
+
+  useEffect(() => {
+    const handler = (e) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      setShowInstallPrompt(true);
+    };
+
+    window.addEventListener('beforeinstallprompt', handler);
+    return () => window.removeEventListener('beforeinstallprompt', handler);
+  }, []);
+
+  const installPWA = async () => {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      console.log(`User response to the install prompt: ${outcome}`);
+      setDeferredPrompt(null);
+      setShowInstallPrompt(false);
+    }
+  };
+
+  return { showInstallPrompt, installPWA };
+};
+
+// WebSocket Hook for Real-time Updates
+const useWebSocket = (userId) => {
+  const [socket, setSocket] = useState(null);
+  const [notifications, setNotifications] = useState([]);
+  const [isConnected, setIsConnected] = useState(false);
+
+  useEffect(() => {
+    if (!userId) return;
+
+    const wsUrl = `${BACKEND_URL.replace('http', 'ws')}/ws/${userId}`;
+    const ws = new WebSocket(wsUrl);
+
+    ws.onopen = () => {
+      console.log('WebSocket connected');
+      setIsConnected(true);
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        setNotifications(prev => [...prev, data]);
+        
+        // Show browser notification if permission granted
+        if (Notification.permission === 'granted') {
+          new Notification(data.type === 'order_update' ? 'Order Update' : 'GrainCraft', {
+            body: data.message,
+            icon: '/logo192.png',
+            tag: 'graincraft-notification'
+          });
+        }
+      } catch (error) {
+        console.error('Error parsing WebSocket message:', error);
+      }
+    };
+
+    ws.onclose = () => {
+      console.log('WebSocket disconnected');
+      setIsConnected(false);
+    };
+
+    ws.onerror = (error) => {
+      console.error('WebSocket error:', error);
+      setIsConnected(false);
+    };
+
+    setSocket(ws);
+
+    return () => {
+      ws.close();
+    };
+  }, [userId]);
+
+  const clearNotifications = () => setNotifications([]);
+
+  return { socket, notifications, isConnected, clearNotifications };
+};
+
 // Context for user authentication
 const AuthContext = createContext();
 
@@ -14,7 +128,19 @@ const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  // Initialize PWA and WebSocket
+  const { showInstallPrompt, installPWA } = usePWAInstall();
+  const { socket, notifications, isConnected, clearNotifications } = useWebSocket(user?.id);
+
   useEffect(() => {
+    // Register service worker
+    registerServiceWorker();
+
+    // Request notification permission
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+
     const token = localStorage.getItem('token');
     if (token) {
       axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
@@ -37,13 +163,19 @@ const AuthProvider = ({ children }) => {
     localStorage.removeItem('user');
     delete axios.defaults.headers.common['Authorization'];
     setUser(null);
+    clearNotifications();
   };
 
   const value = {
     user,
     login,
     logout,
-    loading
+    loading,
+    showInstallPrompt,
+    installPWA,
+    notifications,
+    isConnected,
+    clearNotifications
   };
 
   return (
@@ -60,6 +192,108 @@ const useAuth = () => {
     throw new Error('useAuth must be used within an AuthProvider');
   }
   return context;
+};
+
+// Notification Component
+const NotificationBar = () => {
+  const { notifications, clearNotifications } = useAuth();
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    if (notifications.length > 0) {
+      setVisible(true);
+      const timer = setTimeout(() => {
+        setVisible(false);
+        setTimeout(clearNotifications, 300);
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [notifications, clearNotifications]);
+
+  if (notifications.length === 0 || !visible) return null;
+
+  const latestNotification = notifications[notifications.length - 1];
+
+  return (
+    <div className={`fixed top-4 right-4 z-50 transition-all duration-300 ${
+      visible ? 'translate-x-0 opacity-100' : 'translate-x-full opacity-0'
+    }`}>
+      <div className={`p-4 rounded-lg shadow-lg max-w-sm ${
+        latestNotification.type === 'order_update' 
+          ? 'bg-blue-500 text-white' 
+          : latestNotification.type === 'payment_success'
+          ? 'bg-green-500 text-white'
+          : 'bg-amber-500 text-white'
+      }`}>
+        <div className="flex justify-between items-start">
+          <div>
+            <p className="font-medium">
+              {latestNotification.type === 'order_update' ? 'Order Update' : 'Notification'}
+            </p>
+            <p className="text-sm mt-1">{latestNotification.message}</p>
+          </div>
+          <button 
+            onClick={() => setVisible(false)}
+            className="ml-2 text-white hover:text-gray-200"
+          >
+            ×
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// PWA Install Prompt Component
+const PWAInstallPrompt = () => {
+  const { showInstallPrompt, installPWA } = useAuth();
+
+  if (!showInstallPrompt) return null;
+
+  return (
+    <div className="fixed bottom-4 left-4 right-4 z-50 bg-amber-600 text-white p-4 rounded-lg shadow-lg">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="font-medium">Install GrainCraft</p>
+          <p className="text-sm opacity-90">Get the full app experience</p>
+        </div>
+        <div className="flex space-x-2">
+          <button
+            onClick={installPWA}
+            className="bg-white text-amber-600 px-4 py-2 rounded text-sm font-medium"
+          >
+            Install
+          </button>
+          <button
+            onClick={() => {}} // Hide prompt logic
+            className="text-white opacity-70 hover:opacity-100"
+          >
+            ×
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Connection Status Indicator
+const ConnectionStatus = () => {
+  const { isConnected } = useAuth();
+
+  return (
+    <div className="fixed top-4 left-4 z-40">
+      <div className={`flex items-center space-x-2 px-3 py-1 rounded-full text-xs ${
+        isConnected 
+          ? 'bg-green-100 text-green-800' 
+          : 'bg-red-100 text-red-800'
+      }`}>
+        <div className={`w-2 h-2 rounded-full ${
+          isConnected ? 'bg-green-500' : 'bg-red-500'
+        }`}></div>
+        <span>{isConnected ? 'Connected' : 'Offline'}</span>
+      </div>
+    </div>
+  );
 };
 
 // Protected Route Component
