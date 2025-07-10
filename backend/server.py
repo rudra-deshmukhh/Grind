@@ -992,15 +992,19 @@ async def health_check():
         # Check database connection
         await db.command("ping")
         
-        # Check Redis connection
-        redis_client.ping()
+        # Check Redis connection if available
+        if redis_available and redis_client:
+            redis_client.ping()
         
         return {
             "status": "healthy",
             "timestamp": datetime.utcnow().isoformat(),
-            "version": "2.1.0"
+            "version": "2.1.0",
+            "database": "connected",
+            "redis": "connected" if redis_available else "not_available"
         }
     except Exception as e:
+        logging.error(f"Health check failed: {e}")
         raise HTTPException(status_code=503, detail=f"Service unhealthy: {str(e)}")
 
 # Admin dashboard endpoint
