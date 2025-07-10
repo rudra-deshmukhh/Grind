@@ -12,6 +12,10 @@ from datetime import datetime, timedelta
 BACKEND_URL = "https://c119cd1a-33e0-4e79-80c7-34bcb843eacd.preview.emergentagent.com"
 API_URL = f"{BACKEND_URL}/api"
 
+# Set up logging
+import logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
 class GrainCraftAPITest(unittest.TestCase):
     """Test suite for the GrainCraft API with enhanced features"""
 
