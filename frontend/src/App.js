@@ -323,6 +323,9 @@ function App() {
     <AuthProvider>
       <Router>
         <div className="App">
+          <ConnectionStatus />
+          <NotificationBar />
+          <PWAInstallPrompt />
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
