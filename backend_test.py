@@ -6,6 +6,7 @@ import sys
 import time
 import random
 import string
+from datetime import datetime, timedelta
 
 # Get the backend URL from the frontend .env file
 BACKEND_URL = "https://c119cd1a-33e0-4e79-80c7-34bcb843eacd.preview.emergentagent.com"
@@ -25,6 +26,7 @@ class GrainCraftAPITest(unittest.TestCase):
         self.customer_token = None
         self.test_email = f"test_user_{int(time.time())}@example.com"
         self.test_password = "Test123!"
+        self.cart_items = []
 
     def test_01_health_check(self):
         """Test the health check endpoint"""
