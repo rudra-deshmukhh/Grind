@@ -677,6 +677,24 @@ async def admin_dashboard(current_user: User = Depends(get_current_user)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# Metrics endpoint
+@api_router.get("/metrics")
+async def get_metrics():
+    try:
+        total_users = await db.users.count_documents({})
+        total_orders = await db.orders.count_documents({})
+        active_orders = await db.orders.count_documents({"status": {"$in": ["confirmed", "grinding", "packing", "out_for_delivery"]}})
+        
+        return {
+            "total_users": total_users,
+            "total_orders": total_orders,
+            "active_orders": active_orders,
+            "active_connections": len(manager.active_connections),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 # Initialize data and start background tasks
 @app.on_event("startup")
 async def startup_event():
