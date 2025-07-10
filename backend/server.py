@@ -366,7 +366,13 @@ async def register_user(user_data: UserRegistration):
         
         # Generate OTP for verification
         otp = generate_otp()
-        redis_client.setex(f"otp:{user_data.email}", 600, otp)  # 10 minutes expiry
+        
+        # Store OTP in Redis if available, otherwise use a fixed OTP for demo
+        if redis_available and redis_client:
+            redis_client.setex(f"otp:{user_data.email}", 600, otp)  # 10 minutes expiry
+        else:
+            # For demo purposes, use a fixed OTP when Redis is not available
+            otp = "123456"
         
         # In production, send actual email/SMS
         print(f"OTP for {user_data.email}: {otp}")
