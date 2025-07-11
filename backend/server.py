@@ -19,13 +19,39 @@ import bcrypt
 import razorpay
 import asyncio
 import json
-import redis
 from geopy.distance import geodesic
 from geopy.geocoders import Nominatim
 import hashlib
 import time
 from collections import defaultdict
 from bson import ObjectId
+import sys
+
+# Add AI engine to path
+sys.path.append('/app/ai-engine')
+sys.path.append('/app/advanced-features')
+
+# Import AI components
+try:
+    from recommendation_engine import (
+        initialize_recommendation_engine,
+        get_recommendations_for_user,
+        predict_grain_demand,
+        optimize_grain_pricing,
+        get_market_insights
+    )
+    from smart_inventory import (
+        initialize_inventory_manager,
+        reserve_inventory_stock,
+        consume_inventory_stock,
+        get_inventory_alerts,
+        get_inventory_analytics
+    )
+    AI_FEATURES_AVAILABLE = True
+    logging.info("AI features imported successfully")
+except ImportError as e:
+    logging.warning(f"AI features not available: {e}")
+    AI_FEATURES_AVAILABLE = False
 
 # Custom JSON encoder for MongoDB ObjectId
 def custom_json_encoder(obj):
