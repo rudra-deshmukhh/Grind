@@ -69,6 +69,15 @@ except Exception as e:
     redis_available = False
 
 # Initialize Razorpay client
+try:
+    razorpay_client = razorpay.Client(auth=(
+        os.getenv("RAZORPAY_KEY_ID", "rzp_test_demo"),
+        os.getenv("RAZORPAY_KEY_SECRET", "demo_secret")
+    ))
+    logging.info("Razorpay client initialized")
+except Exception as e:
+    logging.warning(f"Razorpay initialization failed: {e}")
+    razorpay_client = None
 razorpay_client = razorpay.Client(auth=(
     os.getenv("RAZORPAY_KEY_ID", "rzp_test_demo"),
     os.getenv("RAZORPAY_KEY_SECRET", "demo_secret")
