@@ -1197,8 +1197,212 @@ async def startup_event():
         )
         await db.users.insert_one(admin.dict())
     
+    # Initialize AI features if available
+    if AI_FEATURES_AVAILABLE:
+        try:
+            asyncio.create_task(initialize_recommendation_engine(db))
+            asyncio.create_task(initialize_inventory_manager(db))
+            logging.info("AI features initialization started")
+        except Exception as e:
+            logging.error(f"Error initializing AI features: {e}")
+    
     # Start background task for order status updates
     asyncio.create_task(auto_update_order_status())
+
+# AI-Powered Routes
+@api_router.get("/ai/recommendations/{user_id}")
+async def get_user_recommendations(user_id: str, limit: int = 5):
+    """Get AI-powered personalized recommendations for a user"""
+    if not AI_FEATURES_AVAILABLE:
+        raise HTTPException(status_code=503, detail="AI features not available")
+    
+    try:
+        recommendations = await get_recommendations_for_user(user_id, limit)
+        return {
+            "user_id": user_id,
+            "recommendations": recommendations,
+            "ai_powered": True,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logging.error(f"Error getting recommendations: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get recommendations")
+
+@api_router.get("/ai/demand-prediction/{grain_id}")
+async def predict_demand(grain_id: str, days_ahead: int = 7):
+    """Get AI-powered demand prediction for a grain"""
+    if not AI_FEATURES_AVAILABLE:
+        raise HTTPException(status_code=503, detail="AI features not available")
+    
+    try:
+        prediction = await predict_grain_demand(grain_id, days_ahead)
+        return {
+            "grain_id": grain_id,
+            "prediction": prediction,
+            "days_ahead": days_ahead,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logging.error(f"Error predicting demand: {e}")
+        raise HTTPException(status_code=500, detail="Failed to predict demand")
+
+@api_router.get("/ai/pricing-optimization/{grain_id}")
+async def optimize_pricing(grain_id: str, current_price: float, demand_factor: float = 1.0):
+    """Get AI-powered pricing optimization suggestions"""
+    if not AI_FEATURES_AVAILABLE:
+        raise HTTPException(status_code=503, detail="AI features not available")
+    
+    try:
+        optimization = await optimize_grain_pricing(grain_id, current_price, demand_factor)
+        return {
+            "grain_id": grain_id,
+            "optimization": optimization,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logging.error(f"Error optimizing pricing: {e}")
+        raise HTTPException(status_code=500, detail="Failed to optimize pricing")
+
+@api_router.get("/ai/market-insights")
+async def get_ai_market_insights():
+    """Get AI-powered market insights and trends"""
+    if not AI_FEATURES_AVAILABLE:
+        raise HTTPException(status_code=503, detail="AI features not available")
+    
+    try:
+        insights = await get_market_insights()
+        return {
+            "insights": insights,
+            "ai_powered": True,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logging.error(f"Error getting market insights: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get market insights")
+
+# Smart Inventory Routes
+@api_router.get("/inventory/alerts")
+async def get_smart_inventory_alerts(limit: int = 50):
+    """Get smart inventory alerts"""
+    if not AI_FEATURES_AVAILABLE:
+        raise HTTPException(status_code=503, detail="AI features not available")
+    
+    try:
+        alerts = await get_inventory_alerts(limit)
+        return {
+            "alerts": alerts,
+            "count": len(alerts),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logging.error(f"Error getting inventory alerts: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get inventory alerts")
+
+@api_router.get("/inventory/analytics")
+async def get_smart_inventory_analytics():
+    """Get smart inventory analytics"""
+    if not AI_FEATURES_AVAILABLE:
+        raise HTTPException(status_code=503, detail="AI features not available")
+    
+    try:
+        analytics = await get_inventory_analytics()
+        return {
+            "analytics": analytics,
+            "ai_powered": True,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logging.error(f"Error getting inventory analytics: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get inventory analytics")
+
+# Enhanced order creation with inventory management
+@api_router.post("/orders/enhanced")
+async def create_enhanced_order(order_data: Dict[str, Any], current_user: User = Depends(get_current_user)):
+    """Create order with smart inventory management"""
+    try:
+        # Reserve inventory if AI features are available
+        if AI_FEATURES_AVAILABLE:
+            for item in order_data["items"]:
+                if item.get("type") == "individual":
+                    grain_id = item.get("grain_id")
+                    quantity = item.get("quantity_kg", 0)
+                    if grain_id and quantity > 0:
+                        reserved = await reserve_inventory_stock(grain_id, quantity)
+                        if not reserved:
+                            raise HTTPException(status_code=400, detail=f"Insufficient stock for grain {grain_id}")
+        
+        # Calculate total amount
+        total_amount = sum(item["total_price"] for item in order_data["items"])
+        
+        # Create Razorpay order if available
+        razorpay_order = None
+        if razorpay_client:
+            try:
+                razorpay_order = razorpay_client.order.create({
+                    "amount": int(total_amount * 100),  # Convert to paise
+                    "currency": "INR",
+                    "receipt": str(uuid.uuid4()),
+                    "notes": {
+                        "customer_id": current_user.id,
+                        "order_type": "grain_order"
+                    }
+                })
+            except Exception as e:
+                logging.warning(f"Razorpay order creation failed: {e}")
+        
+        # Find nearest grinding store with load balancing
+        grinding_stores = await db.grinding_stores.find({"is_active": True}).to_list(1000)
+        if grinding_stores:
+            # Simple round-robin load balancing
+            store_index = len(await db.orders.find({}).to_list(1)) % len(grinding_stores)
+            selected_store = grinding_stores[store_index]
+        else:
+            selected_store = None
+        
+        order = Order(
+            customer_id=current_user.id,
+            items=order_data["items"],
+            delivery_address=order_data["delivery_address"],
+            delivery_slot=order_data.get("delivery_slot"),
+            delivery_date=datetime.fromisoformat(order_data["delivery_date"]) if order_data.get("delivery_date") else None,
+            grinding_store_id=selected_store["id"] if selected_store else None,
+            total_amount=total_amount,
+            razorpay_order_id=razorpay_order["id"] if razorpay_order else None,
+            notes=order_data.get("notes"),
+            priority=order_data.get("priority", 1)
+        )
+        
+        await db.orders.insert_one(order.dict())
+        
+        # Clear user's order cache if Redis is available
+        if redis_available and redis_client:
+            redis_client.delete(f"orders:{current_user.id}")
+        
+        # Send notification
+        await send_notification(
+            current_user.id,
+            "Order created successfully! Proceed with payment.",
+            "order_created"
+        )
+        
+        response_data = {
+            "order_id": order.id,
+            "amount": int(total_amount * 100),
+            "currency": "INR",
+            "key_id": os.getenv("RAZORPAY_KEY_ID", "rzp_test_demo"),
+            "ai_features_used": AI_FEATURES_AVAILABLE
+        }
+        
+        if razorpay_order:
+            response_data["razorpay_order_id"] = razorpay_order["id"]
+        
+        return response_data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Enhanced order creation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Include router
 app.include_router(api_router)
